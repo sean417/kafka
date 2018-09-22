@@ -231,11 +231,15 @@ public class Compressor {
         return numRecords;
     }
 
+
     public long estimatedBytesWritten() {
         if (type == CompressionType.NONE) {
             return bufferStream.buffer().position();
         } else {
             // estimate the written bytes to the underlying byte buffer based on uncompressed written bytes
+            //根据指定压缩方式的压缩率，写入的未压缩数据的字节数（writtenUncompressed字段记录），
+            // 估算因子COMPRESSION_RATE_ESTIMATION_FACTOR，估计已写入的（压缩后的）字节数，此方法主要用于在判断MemoryRecords是否
+            //写满的逻辑中使用
             return (long) (writtenUncompressed * TYPE_TO_RATE[type.id] * COMPRESSION_RATE_ESTIMATION_FACTOR);
         }
     }
