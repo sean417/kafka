@@ -45,6 +45,8 @@ public final class ProduceRequestResult {
      */
     public void done(TopicPartition topicPartition, long baseOffset, RuntimeException error) {
         this.topicPartition = topicPartition;
+        //服务端为此RecordBatch中第一条消息分配的offset，每个信息可以根据baseOffset
+        // 和自身在此RecordBatch中的相对偏移量，计算出其在服务器端分区中的偏移量了。
         this.baseOffset = baseOffset;
         this.error = error;
         this.latch.countDown();

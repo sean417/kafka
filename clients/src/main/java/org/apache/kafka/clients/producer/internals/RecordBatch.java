@@ -64,6 +64,7 @@ public final class RecordBatch {
      * @return The RecordSend corresponding to this record or null if there isn't sufficient room.
      */
     public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Callback callback, long now) {
+        //估算剩余空间是否不足，是个估计值，不是准确值。
         if (!this.records.hasRoomFor(key, value)) {
             return null;
         } else {
@@ -94,16 +95,19 @@ public final class RecordBatch {
                   baseOffset,
                   exception);
         // execute callbacks
+        //循环执行每个消息的callback
         for (int i = 0; i < this.thunks.size(); i++) {
             try {
                 Thunk thunk = this.thunks.get(i);
                 if (exception == null) {
+                    //将服务端返回的信息（offset和timestamp）和消息的其他信息封装成RecordMetadata
                     // If the timestamp returned by server is NoTimestamp, that means CreateTime is used. Otherwise LogAppendTime is used.
                     RecordMetadata metadata = new RecordMetadata(this.topicPartition,  baseOffset, thunk.future.relativeOffset(),
                                                                  timestamp == Record.NO_TIMESTAMP ? thunk.future.timestamp() : timestamp,
                                                                  thunk.future.checksum(),
                                                                  thunk.future.serializedKeySize(),
                                                                  thunk.future.serializedValueSize());
+                    //调用消息对应的自定义Callback
                     thunk.callback.onCompletion(metadata, null);
                 } else {
                     thunk.callback.onCompletion(null, exception);
@@ -112,6 +116,7 @@ public final class RecordBatch {
                 log.error("Error executing user-provided callback on message for topic-partition {}:", topicPartition, e);
             }
         }
+        //标识整个RecordBatch都已经处理完成了
         this.produceFuture.done(topicPartition, baseOffset, exception);
     }
 

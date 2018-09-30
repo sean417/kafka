@@ -166,38 +166,46 @@ public final class RecordAccumulator {
         appendsInProgress.incrementAndGet();
         try {
             // check if we have an in-progress batch
+            //1.查找TopicPartition对应的Deque
             Deque<RecordBatch> dq = getOrCreateDeque(tp);
-            synchronized (dq) {
+            synchronized (dq) {//2.对Deque加锁
                 if (closed)
                     throw new IllegalStateException("Cannot send after the producer is closed.");
+                //3.向Deque中最后一个RecordBatch追加Record
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, callback, dq);
                 if (appendResult != null)
-                    return appendResult;
-            }
+                    return appendResult;//4.追加成功返回
+            }//5.解锁
 
             // we don't have an in-progress record batch try to allocate a new batch
             int size = Math.max(this.batchSize, Records.LOG_OVERHEAD + Record.recordSize(key, value));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
+            //6.追加失败，从BufferPool中申请新空间。
             ByteBuffer buffer = free.allocate(size, maxTimeToBlock);
             synchronized (dq) {
                 // Need to check if producer is closed again after grabbing the dequeue lock.
                 if (closed)
                     throw new IllegalStateException("Cannot send after the producer is closed.");
-
+                //7.对Deque加锁后，再次调用tryAppend（）方法尝试追加Record
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, callback, dq);
+                //8.追加成功，则返回，释放步骤7申请的新空间
                 if (appendResult != null) {
                     // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
                     free.deallocate(buffer);
                     return appendResult;
                 }
                 MemoryRecords records = MemoryRecords.emptyRecords(buffer, compression, this.batchSize);
+                //新建RecordBatch。
                 RecordBatch batch = new RecordBatch(tp, records, time.milliseconds());
+                //9.在新创建的RecordBatch中追加Record，并将其添加到Batches集合中
                 FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, callback, time.milliseconds()));
 
                 dq.addLast(batch);
+                //10.新创建的RecordBatch中追加到incomplete集合。
                 incomplete.add(batch);
+                //11.返回RecordAppendResult
                 return new RecordAppendResult(future, dq.size() > 1 || batch.records.isFull(), true);
-            }
+            }//12.解锁
         } finally {
             appendsInProgress.decrementAndGet();
         }

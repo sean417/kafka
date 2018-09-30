@@ -31,8 +31,9 @@ public class ProducerDemo {
             String messageStr="Message_"+messageNo;//消息的value
             long startTime=System.currentTimeMillis();
             if(isAsync){
-                producer.send(new ProducerRecord<>(topic,messageNo,messageStr));
-                new DemoCallBack(startTime,messageNo,messageStr);
+                DemoCallBack demoCallBack=new DemoCallBack(startTime,messageNo,messageStr);
+
+                producer.send(new ProducerRecord<>(topic,messageNo,messageStr),demoCallBack);
             }else {
                 try {
                     RecordMetadata recordMetadata=(RecordMetadata)producer.send(new ProducerRecord<>(topic,messageNo,messageStr)).get();
