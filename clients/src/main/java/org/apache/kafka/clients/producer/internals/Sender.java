@@ -334,6 +334,7 @@ public class Sender implements Runnable {
     private List<ClientRequest> createProduceRequests(Map<Integer, List<RecordBatch>> collated, long now) {
         List<ClientRequest> requests = new ArrayList<ClientRequest>(collated.size());
         for (Map.Entry<Integer, List<RecordBatch>> entry : collated.entrySet())
+            //调用produceRequest()方法，将发往同一个Node的RecordBatch封装成一个ClientRequest对象。
             requests.add(produceRequest(now, entry.getKey(), acks, requestTimeout, entry.getValue()));
         return requests;
     }
@@ -342,23 +343,29 @@ public class Sender implements Runnable {
      * Create a produce request from the given record batches
      */
     private ClientRequest produceRequest(long now, int destination, short acks, int timeout, List<RecordBatch> batches) {
+
+        //produceRecordsByPartition和recordsByPartition的value不一样，一个是ByteBuffer，另一个是 RecordBatch
         Map<TopicPartition, ByteBuffer> produceRecordsByPartition = new HashMap<TopicPartition, ByteBuffer>(batches.size());
         final Map<TopicPartition, RecordBatch> recordsByPartition = new HashMap<TopicPartition, RecordBatch>(batches.size());
+
+        //1.将RecordBatch列表按照 partition 分类，整理成上述两个集合。
         for (RecordBatch batch : batches) {
             TopicPartition tp = batch.topicPartition;
             produceRecordsByPartition.put(tp, batch.records.buffer());
             recordsByPartition.put(tp, batch);
         }
+        //2.创建ProduceRequest和RequestSend
         ProduceRequest request = new ProduceRequest(acks, timeout, produceRecordsByPartition);
         RequestSend send = new RequestSend(Integer.toString(destination),
                                            this.client.nextRequestHeader(ApiKeys.PRODUCE),
                                            request.toStruct());
+        //3.创建RequestCompletionHandler作为回调对象，具体逻辑后面详细解释。
         RequestCompletionHandler callback = new RequestCompletionHandler() {
             public void onComplete(ClientResponse response) {
                 handleProduceResponse(response, recordsByPartition, time.milliseconds());
             }
         };
-
+        //创建ClientRequest对象，第二个参数是根据acks配置决定请求是否需要获取响应。
         return new ClientRequest(now, acks != 0, send, callback);
     }
 
