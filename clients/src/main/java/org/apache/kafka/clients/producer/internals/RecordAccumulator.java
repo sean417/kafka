@@ -394,6 +394,7 @@ public final class RecordAccumulator {
             List<RecordBatch> ready = new ArrayList<>();
 
             /*
+            一个node上多个leader副本的情况
             drainIndex是batches的下标，记录上次发送停止的位置，下次继续从这个位置发送
             如果一直从索引0的队列开始发送，可能会出现一直只发送前几个分区的消息的情况，造成其它分区饥饿。
             to make starvation less likely this loop doesn't start at 0

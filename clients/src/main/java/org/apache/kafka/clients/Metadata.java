@@ -169,10 +169,10 @@ public final class Metadata {
         this.lastRefreshMs = now;
         this.lastSuccessfulRefreshMs = now;
         this.version += 1;
-
+        //1.通知Metadata上的监听器。
         for (Listener listener: listeners)
             listener.onMetadataUpdate(cluster);
-
+        //更新cluster字段。
         // Do this after notifying listeners as subscribed topics' list can be changed by listeners
         this.cluster = this.needMetadataForAllTopics ? getClusterForCurrentTopics(cluster) : cluster;
 

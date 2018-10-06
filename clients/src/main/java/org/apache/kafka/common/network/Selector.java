@@ -281,13 +281,13 @@ public class Selector implements Selectable {
 
         /* check ready keys */
         long startSelect = time.nanoseconds();
-        int readyKeys = select(timeout);//调用nioSelector.select()方法，等待I/O事件的发生。
+        int readyKeys = select(timeout);//调用nioSelector.select()方法，当channel没有返回时会在timeout时间内阻塞，等待I/O事件的发生。
         long endSelect = time.nanoseconds();
         currentTimeNanos = endSelect;
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());
 
         if (readyKeys > 0 || !immediatelyConnectedKeys.isEmpty()) {
-            //处理I/O事件
+            //处理 I/O 事件
             pollSelectionKeys(this.nioSelector.selectedKeys(), false);
             pollSelectionKeys(immediatelyConnectedKeys, true);
         }
@@ -345,7 +345,7 @@ public class Selector implements Selectable {
                 if (channel.ready() && key.isWritable()) {
                     Send send = channel.write();
                     /*
-                    上面的channel.write()方法将KafkaChannel.send字段发送出去，如果未发送成功，则返回null,
+                    上面的channel.write()方法将 KafkaChannel.send 字段发送出去，如果未发送成功，则返回null,
                     如果发送完成，则返回send,并添加到completeSends集合中，待后续处理。
                      */
                     if (send != null) {
