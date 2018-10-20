@@ -345,7 +345,7 @@ public class Selector implements Selectable {
                 if (channel.ready() && key.isWritable()) {
                     Send send = channel.write();
                     /*
-                    上面的channel.write()方法将 KafkaChannel.send 字段发送出去，如果未发送成功，则返回null,
+                    上面的 channel.write()方法将 KafkaChannel.send 字段发送出去，如果未发送成功，则返回null,
                     如果发送完成，则返回send,并添加到completeSends集合中，待后续处理。
                      */
                     if (send != null) {

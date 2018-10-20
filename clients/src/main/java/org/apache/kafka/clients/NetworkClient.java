@@ -278,6 +278,7 @@ public class NetworkClient implements KafkaClient {
 
         // invoke callbacks
         // 循环调用ClientRequest的回调函数
+        // 根据response里的 ClientRequest，然后调用ClientRequest的callback函数，完成用户端的回调。
         for (ClientResponse response : responses) {
             if (response.request().hasCallback()) {
                 try {
@@ -440,7 +441,7 @@ public class NetworkClient implements KafkaClient {
         for (Send send : this.selector.completedSends()) {
             ClientRequest request = this.inFlightRequests.lastSent(send.destination());//获取指定队列的第一个元素
             if (!request.expectResponse()) {//检测请求是否需要响应
-                //将inFlightRequests中对应队列中的第一个请求删除
+                //因为completedSends保存的是inFlightRequests中对应队列中的最早进入的消息，所以发送成功后要删除这个消息
                 this.inFlightRequests.completeLastSent(send.destination());
                 //生成ClientResponse对象，添加到responses集合
                 responses.add(new ClientResponse(request, now, false, null));
@@ -449,6 +450,8 @@ public class NetworkClient implements KafkaClient {
     }
 
     /**
+     * 从completedReceives得到从broker的返回值 NetworkReceive，然后找到inFlightRequests对应的ClientRequest，
+     * 构造一个NetworkReceive和ClientRequest 为参数的ClientResponse，并加入到responses里
      * Handle any completed receives and update the response list with the responses received.
      *
      * @param responses The list of responses to update

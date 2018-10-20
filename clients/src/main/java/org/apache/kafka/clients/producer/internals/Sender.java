@@ -129,6 +129,7 @@ public class Sender implements Runnable {
         log.debug("Starting Kafka producer I/O thread.");
 
         // main loop, runs until close is called
+        //  会启动选择器(SelectionKey)的轮询
         while (running) {
             try {
                 run(time.milliseconds());
