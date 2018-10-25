@@ -132,23 +132,23 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private static final AtomicInteger PRODUCER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
     private static final String JMX_PREFIX = "kafka.producer";
 
-    private String clientId;
-    private final Partitioner partitioner;
+    private String clientId;//生产者唯一的标识。
+    private final Partitioner partitioner;//分区选择器，根据一定的策略把消息路由到合适的分区。
     private final int maxRequestSize;
     private final long totalMemorySize;
-    private final Metadata metadata;
+    private final Metadata metadata;//kafak集群的元数据。
     private final RecordAccumulator accumulator;
-    private final Sender sender;
+    private final Sender sender;//真正发送消息的任务
     private final Metrics metrics;
-    private final Thread ioThread;
+    private final Thread ioThread;//发送sender任务的线程。
     private final CompressionType compressionType;
     private final Sensor errors;
     private final Time time;
     private final Serializer<K> keySerializer;
     private final Serializer<V> valueSerializer;
-    private final ProducerConfig producerConfig;
+    private final ProducerConfig producerConfig;//生产者的配置信息，用反射获取配置信息。
     private final long maxBlockTimeMs;
-    private final int requestTimeoutMs;
+    private final int requestTimeoutMs;//从消息发出到收到ACK响应的最长时长。
     private final ProducerInterceptors<K, V> interceptors;
 
     /**

@@ -258,10 +258,10 @@ public class NetworkClient implements KafkaClient {
      */
     @Override
     public List<ClientResponse> poll(long timeout, long now) {
-        //更新Metadata
+        //更新Metadata,把send发送到KafkaChannel，但并没有发送
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
-            this.selector.poll(Utils.min(timeout, metadataTimeout, requestTimeoutMs));//调用KSelector执行I/O操作
+            this.selector.poll(Utils.min(timeout, metadataTimeout, requestTimeoutMs));//调用 KSelector 执行I/O操作
         } catch (IOException e) {
             log.error("Unexpected error during I/O", e);
         }
@@ -460,7 +460,8 @@ public class NetworkClient implements KafkaClient {
     private void handleCompletedReceives(List<ClientResponse> responses, long now) {
         for (NetworkReceive receive : this.selector.completedReceives()) {
             String source = receive.source();//返回响应的NodeId
-            //从inFlightRequests中取出对应的ClientRequest
+            //从inFlightRequests中取出对应的ClientRequest并删除这个ClientRequest，因为请求已经有了从server的response，
+            //就是说请求有了返回，就把请求从inFlightRequests删除
             ClientRequest req = inFlightRequests.completeNext(source);
             //解析响应
             Struct body = parseResponse(receive.payload(), req.request().header());
@@ -624,7 +625,7 @@ public class NetworkClient implements KafkaClient {
 
         private void handleResponse(RequestHeader header, Struct body, long now) {
             this.metadataFetchInProgress = false;//收到 MetadataResponse 了,于是修改metadataFetchInProgress=false。
-            //解析MetadataResponse
+            //从server返回的MetadataResponse并解析MetadataResponse。
             MetadataResponse response = new MetadataResponse(body);
             //创建Cluster对象
             Cluster cluster = response.cluster();
@@ -636,7 +637,7 @@ public class NetworkClient implements KafkaClient {
             // don't update the cluster if there are no valid nodes...the topic we want may still be in the process of being
             // created which means we will get errors and no nodes until it exists
             if (cluster.nodes().size() > 0) {
-
+                //更新
                 this.metadata.update(cluster, now);
             } else {
                 log.trace("Ignoring empty metadata response with correlation id {}.", header.correlationId());
