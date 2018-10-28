@@ -48,6 +48,7 @@ public class ByteBufferOutputStream extends OutputStream {
         return buffer;
     }
 
+    //扩容
     private void expandBuffer(int size) {
         int expandSize = Math.max((int) (buffer.capacity() * REALLOCATION_FACTOR), size);
         ByteBuffer temp = ByteBuffer.allocate(expandSize);

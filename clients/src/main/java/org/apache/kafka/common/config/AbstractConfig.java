@@ -202,7 +202,7 @@ public class AbstractConfig {
         if (!t.isInstance(o))
             throw new KafkaException(c.getName() + " is not an instance of " + t.getName());
         if (o instanceof Configurable)
-            ((Configurable) o).configure(this.originals);
+            ((Configurable) o).configure(this.originals);//统一反射后的初始化过程，对外提供统一的初始化接口。
         return t.cast(o);
     }
 

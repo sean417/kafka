@@ -527,8 +527,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             sender.wakeup();
             metadata.awaitUpdate(version, remainingWaitMs);
             long elapsed = time.milliseconds() - begin;
-            if (elapsed >= maxWaitMs)
+            if (elapsed >= maxWaitMs)//检验超时时间
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
+            //检测权限
             if (metadata.fetch().unauthorizedTopics().contains(topic))
                 throw new TopicAuthorizationException(topic);
             remainingWaitMs = maxWaitMs - elapsed;
