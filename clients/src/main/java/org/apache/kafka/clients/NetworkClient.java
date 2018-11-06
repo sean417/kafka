@@ -460,8 +460,8 @@ public class NetworkClient implements KafkaClient {
     private void handleCompletedReceives(List<ClientResponse> responses, long now) {
         for (NetworkReceive receive : this.selector.completedReceives()) {
             String source = receive.source();//返回响应的NodeId
-            //从inFlightRequests中取出对应的ClientRequest并删除这个ClientRequest，因为请求已经有了从server的response，
-            //就是说请求有了返回，就把请求从inFlightRequests删除
+            //从inFlightRequests中取出对应的 ClientRequest 并删除这个 ClientRequest ，因为请求已经有了从 server 的 response，
+            //就是说请求有了返回，就把请求从 inFlightRequests 删除
             ClientRequest req = inFlightRequests.completeNext(source);
             //解析响应
             Struct body = parseResponse(receive.payload(), req.request().header());

@@ -240,7 +240,7 @@ public class Sender implements Runnable {
         // the select time will be the time difference between now and its linger expiry time;
         // otherwise the select time will be the time difference between now and the metadata expiry time;
         /*
-          9.调用NetworkClient.poll()方法，将KafkaChannel.send字段中保存的ClientRequest发送出去。
+          9.调用NetworkClient.poll()方法，将KafkaChannel.send字段中保存的 ClientRequest 发送出去。
             同时，还会处理服务器发挥的响应，处理超时的请求，调用用户自定义Callback等。
          */
 
@@ -332,7 +332,7 @@ public class Sender implements Runnable {
             if (error == Errors.TOPIC_AUTHORIZATION_FAILED)
                 exception = new TopicAuthorizationException(batch.topicPartition.topic());
             else
-                exception = error.exception();
+                exception = error.exception();//正常返回error.exception()为 null。
             // tell the user the result of their request
             //调用RecordBatch.done()方法，调用消息的回调函数
             batch.done(baseOffset, timestamp, exception);
