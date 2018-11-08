@@ -129,7 +129,7 @@ public class KafkaChannel {
         NetworkReceive result = null;
         /*
         初始化 NetworkReceive,receive()方法从transportLayer中读取数据到NetworkReceive对象中。
-        假设并没有读完一个完整的NetworkReceive，则下次触发OP_READ事件时继续填充此NetworkReceive
+        假设并没有读完一个完整的NetworkReceive，则下次触发OP_READ事件时继续填充此 NetworkReceive
         对象；如果读取了一个完整的NetworkReceive对象，则将receive置空，下次触发读操作时，创建新的
         NetworkReceive对象。
          */

@@ -335,7 +335,7 @@ public class Selector implements Selectable {
                     while ((networkReceive = channel.read()) != null)
                     /*
                         上面channel.read()读取到一个完整的 NetworkReceive，则将其添加到stagedReceives
-                        中保存，若读取不到一个完整的则将其添加到stagedReceives，则返回null,下次处理
+                        中保存，若读取不到一个完整的NetworkReceive，则返回null,下次处理
                         OP_READ事件时，继续读取，直到读到一个完整的NetworkReceive。
                      */
                         addToStagedReceives(channel, networkReceive);
@@ -354,7 +354,7 @@ public class Selector implements Selectable {
                     }
                 }
                 /*
-                  completedSends和completedReceives分别表示在selector端已经发送的
+                  completedSends 和 completedReceives 分别表示在selector端已经发送的
                   和接受到的请求，他们会在NetworkClient的poll调用后被不同的handleCompleteXXX()方法处理
                  */
 
