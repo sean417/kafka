@@ -152,7 +152,7 @@ public final class BufferPool {
                     remainingTimeToBlockNs -= timeNs;
                     // check if we can satisfy this request from the free list,
                     // otherwise allocate memory
-                    //请求的是poolableSize大小的ByteBuffer,且free中有空闲的ByteBuffer
+                    //请求的是 poolableSize 大小的 ByteBuffer,且 free 中有空闲的ByteBuffer
                     if (accumulated == 0 && size == this.poolableSize && !this.free.isEmpty()) {
                         // just grab a buffer from the free list
                         buffer = this.free.pollFirst();
