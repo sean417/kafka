@@ -344,10 +344,13 @@ public class ConsumerNetworkClient implements Closeable {
         for (Map.Entry<Node, List<ClientRequest>> requestEntry: unsent.entrySet()) {
             Node node = requestEntry.getKey();
             Iterator<ClientRequest> iterator = requestEntry.getValue().iterator();
-            while (iterator.hasNext()) {
+            while (iterator.hasNext()) {//便利unsent集合
                 ClientRequest request = iterator.next();
+                //调用NetworkClient.ready()检测是否可以发送请求
                 if (client.ready(node, now)) {
+                    //等待发送请求
                     client.send(request, now);
+                    //从unsent集合中删除此请求。
                     iterator.remove();
                     requestsSent = true;
                 }
