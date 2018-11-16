@@ -290,7 +290,7 @@ public class ConsumerNetworkClient implements Closeable {
         // requests have been disconnected; if they have, then we complete the corresponding future
         // and set the disconnect flag in the ClientResponse
         Iterator<Map.Entry<Node, List<ClientRequest>>> iterator = unsent.entrySet().iterator();
-        while (iterator.hasNext()) {
+        while (iterator.hasNext()) {//遍历unsent
             Map.Entry<Node, List<ClientRequest>> requestEntry = iterator.next();
             Node node = requestEntry.getKey();
             if (client.connectionFailed(node)) {
@@ -365,8 +365,9 @@ public class ConsumerNetworkClient implements Closeable {
     }
 
     private void maybeTriggerWakeup() {
+        //通过wakeupDisabledCount检测是否在执行不可中断的方法，通过wakeup检测是否有中断请求
         if (wakeupDisabledCount == 0 && wakeup.get()) {
-            wakeup.set(false);
+            wakeup.set(false);//重置中断标志
             throw new WakeupException();
         }
     }
