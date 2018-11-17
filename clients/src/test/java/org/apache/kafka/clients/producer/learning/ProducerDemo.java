@@ -24,7 +24,7 @@ public class ProducerDemo {
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,"org.apache.kafka.common.serialization.StringSerializer");
 
         KafkaProducer producer=new KafkaProducer<>(props);
-        String topic="test";
+        String topic="test1";
 
         int messageNo=1;
         while (true){

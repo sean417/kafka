@@ -290,16 +290,17 @@ public class ConsumerNetworkClient implements Closeable {
         // requests have been disconnected; if they have, then we complete the corresponding future
         // and set the disconnect flag in the ClientResponse
         Iterator<Map.Entry<Node, List<ClientRequest>>> iterator = unsent.entrySet().iterator();
-        while (iterator.hasNext()) {
+        while (iterator.hasNext()) {//遍历unsent集合中的每个 Node
             Map.Entry<Node, List<ClientRequest>> requestEntry = iterator.next();
             Node node = requestEntry.getKey();
-            if (client.connectionFailed(node)) {
+            if (client.connectionFailed(node)) {//检测消费者与每个node的连接状态。
                 // Remove entry before invoking request callback to avoid callbacks handling
                 // coordinator failures traversing the unsent list again.
-                iterator.remove();
+                iterator.remove();//从unsent集合中删除此Node对应的全部 ClientRequest
                 for (ClientRequest request : requestEntry.getValue()) {
                     RequestFutureCompletionHandler handler =
                             (RequestFutureCompletionHandler) request.callback();
+                    //调用ClientRequest的回调函数。
                     handler.onComplete(new ClientResponse(request, now, true, null));
                 }
             }
