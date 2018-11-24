@@ -154,13 +154,16 @@ public class RequestFuture<T> {
     }
 
     /**
+     *
+     * 它将RequestFuture<T>适配成RequestFuture<S>
      * Convert from a request future of one type to another type
      * @param adapter The adapter which does the conversion
      * @param <S> The type of the future adapted to
      * @return The new future
      */
     public <S> RequestFuture<S> compose(final RequestFutureAdapter<T, S> adapter) {
-        final RequestFuture<S> adapted = new RequestFuture<S>();
+        final RequestFuture<S> adapted = new RequestFuture<S>();//添加配置器后返回的结果
+        //在当前RequestFuture上添加监听器。
         addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {
@@ -176,15 +179,16 @@ public class RequestFuture<T> {
     }
 
     public void chain(final RequestFuture<T> future) {
-        addListener(new RequestFutureListener<T>() {
+        addListener(new RequestFutureListener<T>() {//添加监听器
             @Override
             public void onSuccess(T value) {
+                //通过监听器value传递给下一个RequestFuture对象
                 future.complete(value);
             }
 
             @Override
             public void onFailure(RuntimeException e) {
-                future.raise(e);
+                future.raise(e);//通过监听器将异常传递给下一个RequestFuture对象。
             }
         });
     }

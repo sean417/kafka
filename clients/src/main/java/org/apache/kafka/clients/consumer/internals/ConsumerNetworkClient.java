@@ -108,6 +108,7 @@ public class ConsumerNetworkClient implements Closeable {
         RequestFutureCompletionHandler future = new RequestFutureCompletionHandler();
         RequestHeader header = client.nextRequestHeader(api);
         RequestSend send = new RequestSend(node.idString(), header, request.toStruct());
+        //创建ClientRequest对象，并保存到unsent集合中
         put(node, new ClientRequest(now, true, send, future));
         return future;
     }
@@ -159,8 +160,8 @@ public class ConsumerNetworkClient implements Closeable {
      * @throws WakeupException if {@link #wakeup()} is called from another thread
      */
     public void poll(RequestFuture<?> future) {
-        while (!future.isDone())
-            poll(Long.MAX_VALUE);
+        while (!future.isDone())//循环检测Future,即请求的完成情况。
+            poll(Long.MAX_VALUE);//请求未完成，则调用poll()方法
     }
 
     /**
@@ -216,29 +217,33 @@ public class ConsumerNetworkClient implements Closeable {
 
     private void poll(long timeout, long now, boolean executeDelayedTasks) {
         // send all the requests we can send now
+        // 步骤1：检测发送条件，并将请求放入KafkaChannel.send字段，待发送。
+
         trySend(now);
 
         // ensure we don't poll any longer than the deadline for
-        // the next scheduled task
+        // the next scheduled task 步骤2：计算超时时间
         timeout = Math.min(timeout, delayedTasks.nextTimeout(now));
+        //步骤3，4：调用NetworkClient.poll()方法，并检测是否有中断请求。
         clientPoll(timeout, now);
-        now = time.milliseconds();
+        now = time.milliseconds();//重置当前时间。
 
         // handle any disconnects by failing the active requests. note that disconnects must
         // be checked immediately following poll since any subsequent call to client.ready()
         // will reset the disconnect status
-        checkDisconnects(now);
+        checkDisconnects(now);//步骤5：根据连接状态，处理unsent中的请求
 
         // execute scheduled tasks
-        if (executeDelayedTasks)
+        if (executeDelayedTasks)//步骤6：处理定时任务
             delayedTasks.poll(now);
 
         // try again to send requests since buffer space may have been
         // cleared or a connect finished in the poll
+        //步骤7：检测发送条件，重新设置KafkaChannel.send字段，并超时断线重连。
         trySend(now);
 
         // fail requests that couldn't be sent if they have expired
-        failExpiredRequests(now);
+        failExpiredRequests(now);//步骤8：处理unsent中的超时任务
     }
 
     /**
@@ -310,7 +315,7 @@ public class ConsumerNetworkClient implements Closeable {
     private void failExpiredRequests(long now) {
         // clear all expired unsent requests and fail their corresponding futures
         Iterator<Map.Entry<Node, List<ClientRequest>>> iterator = unsent.entrySet().iterator();
-        while (iterator.hasNext()) {
+        while (iterator.hasNext()) {//遍历unsent集合
             Map.Entry<Node, List<ClientRequest>> requestEntry = iterator.next();
             Iterator<ClientRequest> requestIterator = requestEntry.getValue().iterator();
             while (requestIterator.hasNext()) {
@@ -318,12 +323,12 @@ public class ConsumerNetworkClient implements Closeable {
                 if (request.createdTimeMs() < now - unsentExpiryMs) {
                     RequestFutureCompletionHandler handler =
                             (RequestFutureCompletionHandler) request.callback();
-                    handler.raise(new TimeoutException("Failed to send request after " + unsentExpiryMs + " ms."));
-                    requestIterator.remove();
+                    handler.raise(new TimeoutException("Failed to send request after " + unsentExpiryMs + " ms."));//调用回调函数
+                    requestIterator.remove();//删除ClientRequest
                 } else
                     break;
             }
-            if (requestEntry.getValue().isEmpty())
+            if (requestEntry.getValue().isEmpty())//队列已经为空，则从unsent集合中删除
                 iterator.remove();
         }
     }
@@ -419,16 +424,17 @@ public class ConsumerNetworkClient implements Closeable {
 
         @Override
         public void onComplete(ClientResponse response) {
-            if (response.wasDisconnected()) {
+            if (response.wasDisconnected()) {//因连接故障而产生的ClientResponse对象
                 ClientRequest request = response.request();
                 RequestSend send = request.request();
                 ApiKeys api = ApiKeys.forId(send.header().apiKey());
                 int correlation = send.header().correlationId();
                 log.debug("Cancelled {} request {} with correlation id {} due to node {} being disconnected",
                         api, request, correlation, send.destination());
+                //调用继承自父类 RequestFuture 的raise()方法
                 raise(DisconnectException.INSTANCE);
             } else {
-                complete(response);
+                complete(response);//调用继承自父类RequestFuture的complete()方法
             }
         }
     }
