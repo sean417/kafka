@@ -297,24 +297,25 @@ public abstract class AbstractCoordinator implements Closeable {
             if (generation < 0 || needRejoin() || coordinatorUnknown()) {
                 // no need to send the heartbeat we're not using auto-assignment or if we are
                 // awaiting a rebalance
-                return;
+                return;//第一步：检查是否要发送心跳请求。
             }
 
             if (heartbeat.sessionTimeoutExpired(now)) {
                 // we haven't received a successful heartbeat in one session interval
                 // so mark the coordinator dead
-                coordinatorDead();
+                coordinatorDead();//第二步：上次心跳响应超时，将GroupCoordinator标记为宕机
                 return;
             }
 
-            if (!heartbeat.shouldHeartbeat(now)) {
+            if (!heartbeat.shouldHeartbeat(now)) {//第三步：还没到发送心跳请求的时间。
                 // we don't need to heartbeat now, so reschedule for when we do
                 client.schedule(this, now + heartbeat.timeToNextHeartbeat(now));
-            } else {
-                heartbeat.sentHeartbeat(now);
-                requestInFlight = true;
-
+            } else {//第四步
+                heartbeat.sentHeartbeat(now);//更新发送 HeartbeatRequest 的时间
+                requestInFlight = true;//防止重复发送HeartbeatRequest
+                //第五步：创建并缓存HeartbeatRequest
                 RequestFuture<Void> future = sendHeartbeatRequest();
+                //第六步：添加监听器
                 future.addListener(new RequestFutureListener<Void>() {
                     @Override
                     public void onSuccess(Void value) {
@@ -562,6 +563,7 @@ public abstract class AbstractCoordinator implements Closeable {
      */
     protected void coordinatorDead() {
         if (this.coordinator != null) {
+            //将unsent中缓存的要发送给Coordinator节点的请求全部清空，并标记为异常后结束
             log.info("Marking the coordinator {} dead for group {}", this.coordinator, groupId);
             client.failUnsentRequests(this.coordinator, GroupCoordinatorNotAvailableException.INSTANCE);
             this.coordinator = null;
@@ -633,7 +635,9 @@ public abstract class AbstractCoordinator implements Closeable {
      * Send a heartbeat request now (visible only for testing).
      */
     public RequestFuture<Void> sendHeartbeatRequest() {
+        //创建HeartbeatRequest
         HeartbeatRequest req = new HeartbeatRequest(this.groupId, this.generation, this.memberId);
+        //使用HeartbeatCompletionHandler对RequestFuture<ClientResponse>进行适配
         return client.send(coordinator, ApiKeys.HEARTBEAT, req)
                 .compose(new HeartbeatCompletionHandler());
     }
@@ -680,7 +684,7 @@ public abstract class AbstractCoordinator implements Closeable {
 
     protected abstract class CoordinatorResponseHandler<R, T>
             extends RequestFutureAdapter<ClientResponse, T> {
-        protected ClientResponse response;
+        protected ClientResponse response;//待处理的响应
 
         public abstract R parse(ClientResponse response);
 
@@ -691,15 +695,15 @@ public abstract class AbstractCoordinator implements Closeable {
             // mark the coordinator as dead
             if (e instanceof DisconnectException)
                 coordinatorDead();
-            future.raise(e);
+            future.raise(e);//调用adapted对象的raise()方法。
         }
 
         @Override
         public void onSuccess(ClientResponse clientResponse, RequestFuture<T> future) {
             try {
                 this.response = clientResponse;
-                R responseObj = parse(clientResponse);
-                handle(responseObj, future);
+                R responseObj = parse(clientResponse);//解析clientResponse
+                handle(responseObj, future);//调用handle()进行处理
             } catch (RuntimeException e) {
                 if (!future.isDone())
                     future.raise(e);
