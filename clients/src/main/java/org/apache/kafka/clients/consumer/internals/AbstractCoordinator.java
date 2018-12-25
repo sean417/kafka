@@ -175,20 +175,22 @@ public abstract class AbstractCoordinator implements Closeable {
     /**
      * Block until the coordinator for this group is known and is ready to receive requests.
      */
-    public void ensureCoordinatorReady() {
+    public void ensureCoordinatorReady() {//步骤1：检测GroupCoordinator的状态。
         while (coordinatorUnknown()) {
             RequestFuture<Void> future = lookupCoordinator();
+            //步骤2：创建并缓存请求。
+            //步骤3：阻塞发GroupCoordinatorRequest，并处理GroupCoordinatorResponse。
             client.poll(future);
 
-            if (future.failed()) {
+            if (future.failed()) {//步骤4：异常处理
                 if (future.isRetriable())
-                    client.awaitMetadataUpdate();
+                    client.awaitMetadataUpdate();//阻塞更新Metadata中记录的集群元数据
                 else
                     throw future.exception();
             } else if (coordinator != null && client.connectionFailed(coordinator)) {
                 // we found the coordinator, but the connection has failed, so mark
                 // it dead and backoff before retrying discovery
-                coordinatorDead();
+                coordinatorDead();//步骤5：连接不到GroupCoordinator，退避一段时间，重试
                 time.sleep(retryBackoffMs);
             }
         }
@@ -547,10 +549,11 @@ public abstract class AbstractCoordinator implements Closeable {
      * @return true if the coordinator is unknown
      */
     public boolean coordinatorUnknown() {
-        if (coordinator == null)
+        if (coordinator == null)//检测Coordinator字段是否为null
             return true;
-
+        //检测与GroupCoodinator之间的网络连接是否正常
         if (client.connectionFailed(coordinator)) {
+            //将unsent集合中对应的请求清空并将coordinator字段设置为null
             coordinatorDead();
             return true;
         }
@@ -652,25 +655,30 @@ public abstract class AbstractCoordinator implements Closeable {
         public void handle(HeartbeatResponse heartbeatResponse, RequestFuture<Void> future) {
             sensors.heartbeatLatency.record(response.requestLatencyMs());
             Errors error = Errors.forCode(heartbeatResponse.errorCode());
-            if (error == Errors.NONE) {
+            if (error == Errors.NONE) {//心跳正常
                 log.debug("Received successful heartbeat response for group {}", groupId);
                 future.complete(null);
             } else if (error == Errors.GROUP_COORDINATOR_NOT_AVAILABLE
                     || error == Errors.NOT_COORDINATOR_FOR_GROUP) {
+                //找不到服务器对应的GroupCoordinator
                 log.debug("Attempt to heart beat failed for group {} since coordinator {} is either not started or not valid.",
                         groupId, coordinator);
+                //清空unsent集合中对应的请求，并重新查找对应的GroupCoordinator
                 coordinatorDead();
-                future.raise(error);
+                future.raise(error);//设置
             } else if (error == Errors.REBALANCE_IN_PROGRESS) {
                 log.debug("Attempt to heart beat failed for group {} since it is rebalancing.", groupId);
+                //正在rebalance,会重新发送JoinGroupRequest消息
                 AbstractCoordinator.this.rejoinNeeded = true;
                 future.raise(Errors.REBALANCE_IN_PROGRESS);
             } else if (error == Errors.ILLEGAL_GENERATION) {
                 log.debug("Attempt to heart beat failed for group {} since generation id is not legal.", groupId);
+                //重新发送JoinGroupRequest消息
                 AbstractCoordinator.this.rejoinNeeded = true;
                 future.raise(Errors.ILLEGAL_GENERATION);
             } else if (error == Errors.UNKNOWN_MEMBER_ID) {
                 log.debug("Attempt to heart beat failed for group {} since member id is not valid.", groupId);
+                //重新发送JoinGroupRequest消息
                 memberId = JoinGroupRequest.UNKNOWN_MEMBER_ID;
                 AbstractCoordinator.this.rejoinNeeded = true;
                 future.raise(Errors.UNKNOWN_MEMBER_ID);
