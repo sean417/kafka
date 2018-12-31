@@ -91,9 +91,10 @@ public class SubscriptionState {
      * @param type The given subscription type
      */
     private void setSubscriptionType(SubscriptionType type) {
+        //如果是NONE，则可以指定其他模式
         if (this.subscriptionType == SubscriptionType.NONE)
             this.subscriptionType = type;
-        else if (this.subscriptionType != type)
+        else if (this.subscriptionType != type)//如果已经指定了其他模式，就会报错
             throw new IllegalStateException(SUBSCRIPTION_EXCEPTION_MESSAGE);
     }
 
@@ -110,10 +111,13 @@ public class SubscriptionState {
     }
 
     public void subscribe(Collection<String> topics, ConsumerRebalanceListener listener) {
+
+        //用户未指定ConsumerRebalanceListener时，默认使用NoOpConsumerRebalanceListener，但是
+        //所有的方法都是空的。
         if (listener == null)
             throw new IllegalArgumentException("RebalanceListener cannot be null");
 
-        setSubscriptionType(SubscriptionType.AUTO_TOPICS);
+        setSubscriptionType(SubscriptionType.AUTO_TOPICS);//选择AUTO_TOPICS模式
 
         this.listener = listener;
 
@@ -121,11 +125,12 @@ public class SubscriptionState {
     }
 
     public void changeSubscription(Collection<String> topicsToSubscribe) {
+        //如果订阅的Topic发生了变化
         if (!this.subscription.equals(new HashSet<>(topicsToSubscribe))) {
-            this.subscription.clear();
-            this.subscription.addAll(topicsToSubscribe);
+            this.subscription.clear();//情况subscription集合
+            this.subscription.addAll(topicsToSubscribe);//添加订阅的Topic
             this.groupSubscription.addAll(topicsToSubscribe);
-            this.needsPartitionAssignment = true;
+            this.needsPartitionAssignment = true;//标记需要重新分配分区
 
             // Remove any assigned partitions which are no longer subscribed to
             for (Iterator<TopicPartition> it = assignment.keySet().iterator(); it.hasNext(); ) {
@@ -148,6 +153,7 @@ public class SubscriptionState {
     }
 
     public void needReassignment() {
+        //删除其他消费者订阅的Topic,只留下本身订阅的topic
         this.groupSubscription.retainAll(subscription);
         this.needsPartitionAssignment = true;
     }

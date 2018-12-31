@@ -146,7 +146,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         this.metadata.addListener(new Metadata.Listener() {
             @Override
             public void onMetadataUpdate(Cluster cluster) {
-
+                //AUTO_PATTERN模式的处理
                 if (subscriptions.hasPatternSubscription()) {
 
                     Set<String> unauthorizedTopics = new HashSet<String>();
@@ -160,20 +160,23 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     final List<String> topicsToSubscribe = new ArrayList<>();
 
                     for (String topic : cluster.topics())
+                        //通过subscribedPattern匹配Topic
                         if (filterTopic(topic))
                             topicsToSubscribe.add(topic);
-
+                    //更新subscriptions集合，groupSubscriptions集合，assignment集合
                     subscriptions.changeSubscription(topicsToSubscribe);
+                    //更新Metadata需要记录元数据的Topic集合
                     metadata.setTopics(subscriptions.groupSubscription());
                 } else if (!cluster.unauthorizedTopics().isEmpty()) {
                     throw new TopicAuthorizationException(new HashSet<>(cluster.unauthorizedTopics()));
                 }
-
+                //检测是否为AUTO_PATTERN或AUTO_TOPICS模式。
                 // check if there are any changes to the metadata which should trigger a rebalance
                 if (subscriptions.partitionsAutoAssigned()) {
-                    MetadataSnapshot snapshot = new MetadataSnapshot(subscriptions, cluster);
-                    if (!snapshot.equals(metadataSnapshot)) {
-                        metadataSnapshot = snapshot;
+                    MetadataSnapshot snapshot = new MetadataSnapshot(subscriptions, cluster);//创建快照
+                    if (!snapshot.equals(metadataSnapshot)) {//比较快照
+                        metadataSnapshot = snapshot;//记录快照
+                        //更新needPartitionAssignment字段为true，表示需要重新进行分区分配
                         subscriptions.needReassignment();
                     }
                 }
@@ -202,28 +205,30 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                                   ByteBuffer assignmentBuffer) {
         // if we were the assignor, then we need to make sure that there have been no metadata updates
         // since the rebalance begin. Otherwise, we won't rebalance again until the next metadata change
+        //第一步：Leader需要比较快照，但Follower不需要。
         if (assignmentSnapshot != null && !assignmentSnapshot.equals(metadataSnapshot)) {
             subscriptions.needReassignment();
             return;
         }
-
+        //查找使用的分配策略
         PartitionAssignor assignor = lookupAssignor(assignmentStrategy);
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
-
+        //第二步：反序列化，更新assignment
         Assignment assignment = ConsumerProtocol.deserializeAssignment(assignmentBuffer);
-
+        //将needsFetchCommittedOffsets设置为true,允许从服务端获取最近一次提交的offset。
         // set the flag to refresh last committed offsets
         subscriptions.needRefreshCommits();
 
         // update partition assignment
+        //填充assignment集合
         subscriptions.assignFromSubscribed(assignment.partitions());
 
         // give the assignor a chance to update internal state based on the received assignment
-        assignor.onAssignment(assignment);
+        assignor.onAssignment(assignment);//第三步：回调函数
 
         // reschedule the auto commit starting from now
-        if (autoCommitEnabled)
+        if (autoCommitEnabled)//第四步：开启AutoCommitTask任务
             autoCommitTask.reschedule();
 
         // execute the user's callback after rebalance
@@ -231,6 +236,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         log.info("Setting newly assigned partitions {} for group {}", subscriptions.assignedPartitions(), groupId);
         try {
             Set<TopicPartition> assigned = new HashSet<>(subscriptions.assignedPartitions());
+            //第五步：回调ConsumerRebalanceListener
             listener.onPartitionsAssigned(assigned);
         } catch (WakeupException e) {
             throw e;
@@ -244,6 +250,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     protected Map<String, ByteBuffer> performAssignment(String leaderId,
                                                         String assignmentStrategy,
                                                         Map<String, ByteBuffer> allSubscriptions) {
+        //步骤三：查找分区分配使用的PartitionAssignor
         PartitionAssignor assignor = lookupAssignor(assignmentStrategy);
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
@@ -258,24 +265,26 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         // the leader will begin watching for changes to any of the topics the group is interested in,
         // which ensures that all metadata changes will eventually be seen
+        //步骤四：对应leader来说，要关注Consumer group中所有消费者订阅的topic
         this.subscriptions.groupSubscribe(allSubscribedTopics);
         metadata.setTopics(this.subscriptions.groupSubscription());
 
         // update metadata (if needed) and keep track of the metadata used for assignment so that
         // we can check after rebalance completion whether anything has changed
-        client.ensureFreshMetadata();
-        assignmentSnapshot = metadataSnapshot;
+        client.ensureFreshMetadata(); //步骤五：更新Metadata
+        assignmentSnapshot = metadataSnapshot;//步骤六：记录快照
 
         log.debug("Performing assignment for group {} using strategy {} with subscriptions {}",
                 groupId, assignor.name(), subscriptions);
-
+        //步骤⑦：进行分区分配
         Map<String, Assignment> assignment = assignor.assign(metadata.fetch(), subscriptions);
 
         log.debug("Finished assignment for group {}: {}", groupId, assignment);
-
+        //步骤八：将分区分配结果序列化，并保存到groupAssignment中
         Map<String, ByteBuffer> groupAssignment = new HashMap<>();
         for (Map.Entry<String, Assignment> assignmentEntry : assignment.entrySet()) {
             ByteBuffer buffer = ConsumerProtocol.serializeAssignment(assignmentEntry.getValue());
+
             groupAssignment.put(assignmentEntry.getKey(), buffer);
         }
 
@@ -284,9 +293,9 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
     @Override
     protected void onJoinPrepare(int generation, String memberId) {
-        // commit offsets prior to rebalance if auto-commit enabled
+        // commit offsets prior to rebalance if auto-commit enabled 进行一次同步提交offsets的操作
         maybeAutoCommitOffsetsSync();
-
+        //调用SubscriptionState中设置的ConsumerRebalanceListener
         // execute the user's callback before rebalance
         ConsumerRebalanceListener listener = subscriptions.listener();
         log.info("Revoking previously assigned partitions {} for group {}", subscriptions.assignedPartitions(), groupId);
@@ -301,13 +310,14 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         }
 
         assignmentSnapshot = null;
-        subscriptions.needReassignment();
+        subscriptions.needReassignment();//将needsPartitionAssignment设置为true
     }
 
     @Override
     public boolean needRejoin() {
-        return subscriptions.partitionsAutoAssigned() &&
-                (super.needRejoin() || subscriptions.partitionAssignmentNeeded());
+        return subscriptions.partitionsAutoAssigned() &&//检测subscriptionType
+                (super.needRejoin() //检测 rejoinNeeded的值
+                        || subscriptions.partitionAssignmentNeeded());
     }
 
     /**
@@ -353,14 +363,14 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * Ensure that we have a valid partition assignment from the coordinator.
      */
     public void ensurePartitionAssignment() {
-        if (subscriptions.partitionsAutoAssigned()) {
+        if (subscriptions.partitionsAutoAssigned()) {//第一步：检测订阅类型
             // Due to a race condition between the initial metadata fetch and the initial rebalance, we need to ensure that
             // the metadata is fresh before joining initially, and then request the metadata update. If metadata update arrives
             // while the rebalance is still pending (for example, when the join group is still inflight), then we will lose
             // track of the fact that we need to rebalance again to reflect the change to the topic subscription. Without
             // ensuring that the metadata is fresh, any metadata update that changes the topic subscriptions and arrives with a
             // rebalance in progress will essentially be ignored. See KAFKA-3949 for the complete description of the problem.
-            if (subscriptions.hasPatternSubscription())
+            if (subscriptions.hasPatternSubscription())//第二步：检测是否需要更新Metadata
                 client.ensureFreshMetadata();
 
             ensureActiveGroup();
