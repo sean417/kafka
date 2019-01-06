@@ -978,20 +978,25 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     private Map<TopicPartition, List<ConsumerRecord<K, V>>> pollOnce(long timeout) {
         // ensure we have partitions assigned if we expect to
+
+        //如果是AUTO_TOPICS或AUTO_PATTERN订阅模式
         if (subscriptions.partitionsAutoAssigned())
-            coordinator.ensurePartitionAssignment();
+            coordinator.ensurePartitionAssignment();//完成rebalance操作
 
         // fetch positions if we have partitions we're subscribed to that we
         // don't know the offset for
+        //恢复SubscriptionState中对应的TopicPartitionState状态
+        //主要是committed字段和position字段
         if (!subscriptions.hasAllFetchPositions())
             updateFetchPositions(this.subscriptions.missingFetchPositions());
 
         long now = time.milliseconds();
 
         // execute delayed tasks (e.g. autocommits and heartbeats) prior to fetching records
-        client.executeDelayedTasks(now);
+        client.executeDelayedTasks(now);//执行定时任务，包括HeartbeatTask和AutoCommitTask
 
         // init any new fetches (won't resend pending fetches)
+        //尝试从completedFetches缓存中解析消息
         Map<TopicPartition, List<ConsumerRecord<K, V>>> records = fetcher.fetchedRecords();
 
         // if data is available already, e.g. from a previous network client poll() call to commit,
@@ -999,9 +1004,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         if (!records.isEmpty())
             return records;
 
-        fetcher.sendFetches();
-        client.poll(timeout, now);
-        return fetcher.fetchedRecords();
+        fetcher.sendFetches();//创建并缓存FetchRequest请求
+        client.poll(timeout, now);//发送FetchRequest
+        return fetcher.fetchedRecords();//从completedFetches缓存中解析消息
     }
 
     /**
