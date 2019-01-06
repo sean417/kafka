@@ -926,7 +926,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public ConsumerRecords<K, V> poll(long timeout) {
-        acquire();
+        acquire();//防止多线程操作。
         try {
             if (timeout < 0)
                 throw new IllegalArgumentException("Timeout must not be negative");
@@ -935,8 +935,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             long start = time.milliseconds();
             long remaining = timeout;
             do {
-                Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollOnce(remaining);
-                if (!records.isEmpty()) {
+                Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollOnce(remaining);//核心方法
+                if (!records.isEmpty()) {//检测是否有消息返回
                     // before returning the fetched records, we can send off the next round of fetches
                     // and avoid block waiting for their responses to enable pipelining while the user
                     // is handling the fetched records.
@@ -944,16 +944,23 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     // NOTE: since the consumed position has already been updated, we must not allow
                     // wakeups or any other errors to be triggered prior to returning the fetched records.
                     // Additionally, pollNoWakeup does not allow automatic commits to get triggered.
-                    fetcher.sendFetches();
+                    // 为了提升效率，在对records集合进行处理之前，先发送一次FetchRequest。这样，线程处理
+                    // 本次records集合的操作，与 FetchRequest 及其响应在网络上传输以及在服务端的处理就变成并行
+                    // 这样就减少等待网络IO的时间。
+                    fetcher.sendFetches();//创建并缓存 FetchRequest
+
+                    //调用ConsumerNetworkClient.pollNoWakeUp()方法将FetchRequest发送
+                    //出去。这里的pollNoWakeup()方法并不会阻塞，不能被中断，不会执行定时任务
                     client.pollNoWakeup();
 
                     if (this.interceptors == null)
                         return new ConsumerRecords<>(records);
                     else
+                        //调用ConsumerInterceptors
                         return this.interceptors.onConsume(new ConsumerRecords<>(records));
                 }
 
-                long elapsed = time.milliseconds() - start;
+                long elapsed = time.milliseconds() - start;//计算超时时间
                 remaining = timeout - elapsed;
             } while (remaining > 0);
 
@@ -1435,8 +1442,10 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private void acquire() {
         ensureNotClosed();
         long threadId = Thread.currentThread().getId();
+        //记录当前线程Id,通过CAS操作完成
         if (threadId != currentThread.get() && !currentThread.compareAndSet(NO_CURRENT_THREAD, threadId))
             throw new ConcurrentModificationException("KafkaConsumer is not safe for multi-threaded access");
+        //记录重入次数
         refcount.incrementAndGet();
     }
 
@@ -1445,6 +1454,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     private void release() {
         if (refcount.decrementAndGet() == 0)
+            //更新线程id
             currentThread.set(NO_CURRENT_THREAD);
     }
 }
