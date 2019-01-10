@@ -29,7 +29,7 @@ public class KafkaConsumerDemo {
         props.put("value.deserializer","org.apache.kafka.common.serialization.StringDeserializer");
 
         KafkaConsumer<String,String> consumer=new KafkaConsumer<String, String>(props);
-        //订阅test1和test2两个topic
+        //订阅 test1 和 test2 两个topic
         consumer.subscribe(Arrays.asList("test1","test2"));
         try{
             while (true){
