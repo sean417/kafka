@@ -24,7 +24,7 @@ public class KafkaConsumerDemo {
         props.put("auto.commit.interval.ms","1000");
         props.put("session.timeout.ms","30000");
         //key使用的Deserializer
-        props.put("key.deserializer","org.apache.kafka.common.serialization.IntegerSerializer");
+        props.put("key.deserializer","org.apache.kafka.common.serialization.IntegerDeserializer");
         // value 使用的Deserializer
         props.put("value.deserializer","org.apache.kafka.common.serialization.StringDeserializer");
 

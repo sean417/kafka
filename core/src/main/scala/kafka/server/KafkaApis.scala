@@ -72,10 +72,17 @@ class KafkaApis(val requestChannel: RequestChannel,
     try {
       trace("Handling request:%s from connection %s;securityProtocol:%s,principal:%s".
         format(request.requestDesc(true), request.connectionId, request.securityProtocol, request.session.principal))
+      //根据requestId来分发请求
       ApiKeys.forId(request.requestId) match {
+          //ApiKeys.PRODUCE表示ProducerRequest,
+          // ProducerRequest交给handleProducerRequest方法进行处理
         case ApiKeys.PRODUCE => handleProducerRequest(request)
+        //ApiKeys.FETCH 表示 FetchRequest,
+        // FetchRequest 交给 handleFetchRequest 方法进行处理
         case ApiKeys.FETCH => handleFetchRequest(request)
         case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request)
+        //ApiKeys.METADATA 表示 MetadataRequest,
+        // MetadataRequest 交给 handleTopicMetadataRequest 方法进行处理
         case ApiKeys.METADATA => handleTopicMetadataRequest(request)
         case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request)
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request)

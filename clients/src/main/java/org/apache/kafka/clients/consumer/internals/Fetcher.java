@@ -127,9 +127,9 @@ public class Fetcher<K, V> {
     public void sendFetches() {
         for (Map.Entry<Node, FetchRequest> fetchEntry: createFetchRequests().entrySet()) {
             final FetchRequest request = fetchEntry.getValue();
-            //将发往每个Node的FetchRequest都缓存到unsent队列上
+            //将发往每个 Node 的 FetchRequest 都缓存到 unsent 队列上
             client.send(fetchEntry.getKey(), ApiKeys.FETCH, request)
-                    //添加Listener，这是处理FetchResponse的入口
+                    //添加 Listener，这是处理 FetchResponse 的入口
                     .addListener(new RequestFutureListener<ClientResponse>() {
                         @Override
                         public void onSuccess(ClientResponse resp) {
@@ -306,7 +306,7 @@ public class Fetcher<K, V> {
      */
     private void resetOffset(TopicPartition partition) {
         OffsetResetStrategy strategy = subscriptions.resetStrategy(partition);
-        final long timestamp;
+        final long timestamp;//根据配置的重置策略选择timestamp
         if (strategy == OffsetResetStrategy.EARLIEST)
             timestamp = ListOffsetRequest.EARLIEST_TIMESTAMP;
         else if (strategy == OffsetResetStrategy.LATEST)
@@ -319,7 +319,7 @@ public class Fetcher<K, V> {
 
         // we might lose the assignment while fetching the offset, so check it is still active
         if (subscriptions.isAssigned(partition))
-            this.subscriptions.seek(partition, offset);
+            this.subscriptions.seek(partition, offset);//更新position
     }
 
     /**

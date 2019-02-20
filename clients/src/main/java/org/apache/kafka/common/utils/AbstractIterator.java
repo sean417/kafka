@@ -37,11 +37,11 @@ public abstract class AbstractIterator<T> implements Iterator<T> {
         switch (state) {
             case FAILED:
                 throw new IllegalStateException("Iterator is in failed state");
-            case DONE:
+            case DONE://迭代结束，返回false.
                 return false;
-            case READY:
+            case READY://迭代准备好了，返回true
                 return true;
-            default:
+            default://NOT_READY状态，需要调用maybeComputeNext()方法获取next项
                 return maybeComputeNext();
         }
     }
@@ -50,12 +50,12 @@ public abstract class AbstractIterator<T> implements Iterator<T> {
     public T next() {
         if (!hasNext())
             throw new NoSuchElementException();
-        state = State.NOT_READY;
+        state = State.NOT_READY;//将state字段重置为NOT_READY状态
         if (next == null)
             throw new IllegalStateException("Expected item but none found.");
-        return next;
+        return next;//返回next
     }
-
+    //不支持remove操作，调用报异常。
     @Override
     public void remove() {
         throw new UnsupportedOperationException("Removal not supported");
@@ -66,20 +66,20 @@ public abstract class AbstractIterator<T> implements Iterator<T> {
             throw new NoSuchElementException();
         return next;
     }
-
+    //子类在实现makeNext()方法中可以通过调用allDone()方法结束整个迭代
     protected T allDone() {
         state = State.DONE;
         return null;
     }
-
+    //子类实现，返回下一个迭代项
     protected abstract T makeNext();
 
     private Boolean maybeComputeNext() {
-        state = State.FAILED;
+        state = State.FAILED;//若在子类的实现makeNext()中抛出异常，则state会处于这个状态
         next = makeNext();
         if (state == State.DONE) {
             return false;
-        } else {
+        } else {//在makeNext()方法中完成了next项的构造
             state = State.READY;
             return true;
         }

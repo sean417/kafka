@@ -44,7 +44,7 @@ public final class Metadata {
     private long lastSuccessfulRefreshMs;
     private Cluster cluster;
     private boolean needUpdate;
-    private final Set<String> topics;
+    private final Set<String> topics;//需要获取那些topic的相关Metadata
     private final List<Listener> listeners;
     private boolean needMetadataForAllTopics;
 
@@ -136,11 +136,12 @@ public final class Metadata {
 
     /**
      * Replace the current set of topics maintained to the one provided
+     *
      * @param topics
      */
     public synchronized void setTopics(Collection<String> topics) {
         if (!this.topics.containsAll(topics))
-            requestUpdate();
+            requestUpdate();//topic增加就需要更新metaData。
         this.topics.clear();
         this.topics.addAll(topics);
     }

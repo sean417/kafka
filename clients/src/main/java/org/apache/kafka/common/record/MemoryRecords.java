@@ -230,32 +230,37 @@ public class MemoryRecords implements Records {
         private final long absoluteBaseOffset;
 
         public RecordsIterator(ByteBuffer buffer, boolean shallow) {
-            this.type = CompressionType.NONE;
-            this.buffer = buffer;
-            this.shallow = shallow;
-            this.stream = new DataInputStream(new ByteBufferInputStream(buffer));
+            this.type = CompressionType.NONE;//外层消息是非压缩的
+            this.buffer = buffer;//指向MemoryRecords.buffer字段
+            this.shallow = shallow;//标识是否为深层迭代器
+            this.stream = new DataInputStream(new ByteBufferInputStream(buffer));//输入流
             this.logEntries = null;
             this.absoluteBaseOffset = -1;
         }
 
         // Private constructor for inner iterator.
+        // Inner Iterator的构造方法
         private RecordsIterator(LogEntry entry) {
-            this.type = entry.record().compressionType();
+            this.type = entry.record().compressionType();//指定内存压缩消息的压缩类型。
             this.buffer = entry.record().value();
             this.shallow = true;
+            //创建指定压缩类型的输入流
             this.stream = Compressor.wrapForInput(new ByteBufferInputStream(this.buffer), type, entry.record().magic());
-            long wrapperRecordOffset = entry.offset();
+            long wrapperRecordOffset = entry.offset();//外层消息的offset
             // If relative offset is used, we need to decompress the entire message first to compute
             // the absolute offset.
             if (entry.record().magic() > Record.MAGIC_VALUE_V0) {
                 this.logEntries = new ArrayDeque<>();
                 long wrapperRecordTimestamp = entry.record().timestamp();
-                while (true) {
+                while (true) {//在这层循环中，将内层消息全部解压出来并添加到logEntries集合中
                     try {
+                        //对于内层消息，getNextEntryFromStream()方法是读取并解压缩消息
+                        //对于外层消息或非压缩消息，则仅仅是读取消息
                         LogEntry logEntry = getNextEntryFromStream();
                         Record recordWithTimestamp = new Record(logEntry.record().buffer(),
                                                                 wrapperRecordTimestamp,
                                                                 entry.record().timestampType());
+                        //添加到logEntries集合中
                         logEntries.add(new LogEntry(logEntry.offset(), recordWithTimestamp));
                     } catch (EOFException e) {
                         break;
@@ -263,6 +268,7 @@ public class MemoryRecords implements Records {
                         throw new KafkaException(e);
                     }
                 }
+                //计算absoluteBaseOffset
                 this.absoluteBaseOffset = wrapperRecordOffset - logEntries.getLast().offset();
             } else {
                 this.logEntries = null;
@@ -280,20 +286,21 @@ public class MemoryRecords implements Records {
          */
         @Override
         protected LogEntry makeNext() {
-            if (innerDone()) {
+            if (innerDone()) {//检测当前深层迭代是否已经完成，或是深层次迭代还未开始
                 try {
-                    LogEntry entry = getNextEntry();
+                    LogEntry entry = getNextEntry();//获取消息
                     // No more record to return.
-                    if (entry == null)
+                    if (entry == null)//获取不到消息，调用allDone()方法结束迭代
                         return allDone();
 
-                    // Convert offset to absolute offset if needed.
+                    // Convert offset to absolute offset if needed.在Inner Iterator中计算每个消息的absoluteOffset
                     if (absoluteBaseOffset >= 0) {
                         long absoluteOffset = absoluteBaseOffset + entry.offset();
                         entry = new LogEntry(absoluteOffset, entry.record());
                     }
 
                     // decide whether to go shallow or deep iteration if it is compressed
+                    // 根据压缩类型和shallow参数决定是否创建Inner Iterator
                     CompressionType compression = entry.record().compressionType();
                     if (compression == CompressionType.NONE || shallow) {
                         return entry;
@@ -304,8 +311,9 @@ public class MemoryRecords implements Records {
                         // would not try to further decompress underlying messages
                         // There will be at least one element in the inner iterator, so we don't
                         // need to call hasNext() here.
+                        // 创建Inner Iterator，每迭代一个外层消息，创建一个Inner Iterator用来迭代其中的内层消息
                         innerIter = new RecordsIterator(entry);
-                        return innerIter.next();
+                        return innerIter.next();//迭代内层消息
                     }
                 } catch (EOFException e) {
                     return allDone();
@@ -316,7 +324,7 @@ public class MemoryRecords implements Records {
                 return innerIter.next();
             }
         }
-
+        //getNextEntry()方法的实现
         private LogEntry getNextEntry() throws IOException {
             if (logEntries != null)
                 return getNextEntryFromEntryList();
@@ -328,25 +336,27 @@ public class MemoryRecords implements Records {
             return logEntries.isEmpty() ? null : logEntries.remove();
         }
 
+        //
         private LogEntry getNextEntryFromStream() throws IOException {
             // read the offset
-            long offset = stream.readLong();
+            long offset = stream.readLong();//读取offset
             // read record size
-            int size = stream.readInt();
+            int size = stream.readInt();//读取消息长度
             if (size < 0)
                 throw new IllegalStateException("Record with size " + size);
             // read the record, if compression is used we cannot depend on size
             // and hence has to do extra copy
             ByteBuffer rec;
-            if (type == CompressionType.NONE) {
+            if (type == CompressionType.NONE) {//未压缩消息的处理
                 rec = buffer.slice();
                 int newPos = buffer.position() + size;
                 if (newPos > buffer.limit())
                     return null;
-                buffer.position(newPos);
+                buffer.position(newPos);//修改buffer的position
                 rec.limit(size);
-            } else {
+            } else {//处理压缩消息
                 byte[] recordBuffer = new byte[size];
+                //从stream中读取消息，此过程会解压消息
                 stream.readFully(recordBuffer, 0, size);
                 rec = ByteBuffer.wrap(recordBuffer);
             }

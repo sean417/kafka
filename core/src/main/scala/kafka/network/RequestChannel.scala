@@ -48,13 +48,14 @@ object RequestChannel extends Logging {
   case class Request(processor: Int, connectionId: String, session: Session, private var buffer: ByteBuffer, startTimeMs: Long, securityProtocol: SecurityProtocol) {
     // These need to be volatile because the readers are in the network thread and the writers are in the request
     // handler threads or the purgatory threads
+    //下面是一些记录操作时间的字段，由于这些字段会被多个线程修改和读取，使用@volatile保证可见性
     @volatile var requestDequeueTimeMs = -1L
     @volatile var apiLocalCompleteTimeMs = -1L
     @volatile var responseCompleteTimeMs = -1L
     @volatile var responseDequeueTimeMs = -1L
     @volatile var apiRemoteCompleteTimeMs = -1L
 
-    val requestId = buffer.getShort()
+    val requestId = buffer.getShort()//请求类型id
 
     // TODO: this will be removed once we migrated to client-side format
     // for server-side request / response format
@@ -72,6 +73,7 @@ object RequestChannel extends Logging {
 
     // if we failed to find a server-side mapping, then try using the
     // client-side request / response format
+    //请求头
     val header: RequestHeader =
       if (requestObj == null) {
         buffer.rewind
@@ -82,6 +84,7 @@ object RequestChannel extends Logging {
         }
       } else
         null
+    //请求体
     val body: AbstractRequest =
       if (requestObj == null)
         try {
@@ -89,6 +92,7 @@ object RequestChannel extends Logging {
           if (header.apiKey == ApiKeys.API_VERSIONS.id && !Protocol.apiVersionSupported(header.apiKey, header.apiVersion))
             new ApiVersionsRequest
           else
+          //解析请求
             AbstractRequest.getRequest(header.apiKey, header.apiVersion, buffer)
         } catch {
           case ex: Throwable =>
@@ -97,7 +101,7 @@ object RequestChannel extends Logging {
       else
         null
 
-    buffer = null
+    buffer = null//解析完成
     private val requestLogger = Logger.getLogger("kafka.request.logger")
 
     def requestDesc(details: Boolean): String = {
@@ -208,24 +212,27 @@ class RequestChannel(val numProcessors: Int, val queueSize: Int) extends KafkaMe
     requestQueue.put(request)
   }
 
+  //向对应responseQueue队列中添加SendAction类型的Response
   /** Send a response back to the socket server to be sent over the network */
   def sendResponse(response: RequestChannel.Response) {
     responseQueues(response.processor).put(response)
-    for(onResponse <- responseListeners)
+    for(onResponse <- responseListeners)//调用responseListeners集合中所有的监听器
       onResponse(response.processor)
   }
 
+  //向对应responseQueue队列中添加NoOpAction类型的Response
   /** No operation to take for the request, need to read more over the network */
   def noOperation(processor: Int, request: RequestChannel.Request) {
     responseQueues(processor).put(new RequestChannel.Response(processor, request, null, RequestChannel.NoOpAction))
-    for(onResponse <- responseListeners)
+    for(onResponse <- responseListeners)//调用responseListeners集合中所有的监听器
       onResponse(processor)
   }
 
+  //向对应responseQueue队列中添加CloseConnectionAction类型的Response
   /** Close the connection for the request */
   def closeConnection(processor: Int, request: RequestChannel.Request) {
     responseQueues(processor).put(new RequestChannel.Response(processor, request, null, RequestChannel.CloseConnectionAction))
-    for(onResponse <- responseListeners)
+    for(onResponse <- responseListeners)//调用responseListeners集合中所有的监听器
       onResponse(processor)
   }
 

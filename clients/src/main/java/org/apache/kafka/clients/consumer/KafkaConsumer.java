@@ -985,7 +985,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
         // fetch positions if we have partitions we're subscribed to that we
         // don't know the offset for
-        //恢复SubscriptionState中对应的TopicPartitionState状态
+        //恢复 SubscriptionState 中对应的TopicPartitionState状态
         //主要是committed字段和position字段
         if (!subscriptions.hasAllFetchPositions())
             updateFetchPositions(this.subscriptions.missingFetchPositions());

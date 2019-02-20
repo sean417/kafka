@@ -96,7 +96,7 @@ public abstract class AbstractCoordinator implements Closeable {
     protected Node coordinator;
     protected String memberId;
     protected String protocol;
-    protected int generation;
+    protected int generation;//每次 Rebalance 操作都会递增generation,防止网络延迟造成的收到上次Rebalance操作。
 
     private RequestFuture<Void> findCoordinatorFuture = null;
 
@@ -245,7 +245,7 @@ public abstract class AbstractCoordinator implements Closeable {
             // ensure that there are no pending requests to the coordinator. This is important
             // in particular to avoid resending a pending JoinGroup request.
             if (client.pendingRequestCount(this.coordinator) > 0) {
-                //第六步：等待发往GroupCoordinator所在节点的消息全部完成。
+                //第六步：等待发往GroupCoordinator所在节点的消息全部完成，避免重复发送JoinGroupRequest请求。
                 client.awaitPendingRequests(this.coordinator);
                 continue;
             }
@@ -318,7 +318,7 @@ public abstract class AbstractCoordinator implements Closeable {
             } else {//第四步
                 heartbeat.sentHeartbeat(now);//更新发送 HeartbeatRequest 的时间
                 requestInFlight = true;//防止重复发送HeartbeatRequest
-                //第五步：创建并缓存HeartbeatRequest
+                //第五步：创建并缓存 HeartbeatRequest
                 RequestFuture<Void> future = sendHeartbeatRequest();
                 //第六步：添加监听器
                 future.addListener(new RequestFutureListener<Void>() {
@@ -384,15 +384,15 @@ public abstract class AbstractCoordinator implements Closeable {
                 log.debug("Received successful join group response for group {}: {}", groupId, joinResponse.toStruct());
                 AbstractCoordinator.this.memberId = joinResponse.memberId();
                 AbstractCoordinator.this.generation = joinResponse.generationId();
-                AbstractCoordinator.this.rejoinNeeded = false;//修改了this.rejoinNeeded = false
+                AbstractCoordinator.this.rejoinNeeded = false;//修改了this.rejoinNeeded = false，防止重复发送
                 AbstractCoordinator.this.protocol = joinResponse.groupProtocol();
                 sensors.joinLatency.record(response.requestLatencyMs());
                 if (joinResponse.isLeader()) {//步骤二：判断是否为leader
                     /*
-                    注意这里，此future是在前面sendJoinGroupRequest()方法返回的 RequestFuture 对象
+                    注意这里，此future是在前面sendJoinGroupRequest()方法返回的 RequestFuture 对象。
                     在onJoinLeader()和onJoinFollower()方法中，都涉及发送 SyncGroupRequest 逻辑，
                     返回的RequestFuture 标识是SyncGroupRequest的完成情况。这里使用chain()方法，主要实现
-                    的功能是：当SyncGroupResponse处理完成后，再通知这个future对象。
+                    的功能是：当SyncGroupResponse 处理完成后，再通知这个future对象。
                      */
                     onJoinLeader(joinResponse).chain(future);
                 } else {
@@ -538,7 +538,7 @@ public abstract class AbstractCoordinator implements Closeable {
 
         if (!coordinatorUnknown()) {
             // We already found the coordinator, so ignore the request
-            //检测是否已经找到GroupCoordinator且成功连接
+            //检测是否已经找到 GroupCoordinator 且成功连接,找到GroupCoordinator就就不需要处理了
             future.complete(null);
         } else {
             //解析GroupCoordinatorResponse
