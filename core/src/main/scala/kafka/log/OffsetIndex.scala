@@ -60,40 +60,46 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   /* initialize the memory mapping for this index */
   @volatile
   private[this] var mmap: MappedByteBuffer = {
+    //如果索引文件不存在，则创建新文件并返回true，反之返回false。
     val newlyCreated = _file.createNewFile()
     val raf = new RandomAccessFile(_file, "rw")
     try {
       /* pre-allocate the file if necessary */
-      if (newlyCreated) {
+      if (newlyCreated) {//对于新创建的的索引文件，进行扩容
         if (maxIndexSize < 8)
           throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
+        //根据maxIndexSize的值对索引文件进行扩容，扩容结果是小于maxIndexSize的最大的8的倍数
         raf.setLength(roundToExactMultiple(maxIndexSize, 8))
       }
 
-      /* memory-map the file */
+      /* memory-map the file 进行内存映射 */
       val len = raf.length()
       val idx = raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, len)
 
-      /* set the position in the index for the next entry */
+      /* set the position in the index for the next entry
+      * 将新创建的索引文件的positon设置为0，从头开始写文件。
+      * */
       if (newlyCreated)
         idx.position(0)
       else
         // if this is a pre-existing index, assume it is all valid and set position to last entry
+        //  对于原来就存在的索引文件，则将position移动到所有索引项的结束位置，防止数据覆盖
         idx.position(roundToExactMultiple(idx.limit, 8))
-      idx
+      idx    //    返回MappedByteBuffer
     } finally {
       CoreUtils.swallow(raf.close())
     }
   }
 
-  /* the number of eight-byte entries currently in the index */
+  /* the number of eight-byte entries currently in the index 索引项个数 */
   @volatile
   private[this] var _entries = mmap.position / 8
 
-  /* The maximum number of eight-byte entries this index can hold */
+  /* The maximum number of eight-byte entries this index can hold 最大索引项个数 */
   @volatile
   private[this] var _maxEntries = mmap.limit / 8
 
+  //读取最后一个索引项的 offset
   @volatile
   private[this] var _lastOffset = readLastEntry.offset
   
@@ -132,13 +138,15 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
    * the pair (baseOffset, 0) is returned.
    */
   def lookup(targetOffset: Long): OffsetPosition = {
-    maybeLock(lock) {
-      val idx = mmap.duplicate
-      val slot = indexSlotFor(idx, targetOffset)
+    maybeLock(lock) {//window操作要加锁，其他操作不加做
+      val idx = mmap.duplicate//创建一个副本
+      val slot = indexSlotFor(idx, targetOffset)//二分查找的具体实现
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
-      else
+      else//将offset和物理地址（position）封装成OffsetPosition对象并返回
         OffsetPosition(baseOffset + relativeOffset(idx, slot), physical(idx, slot))
+      //relativeOffset()方法和physical()方法是获取索引项内容的辅助方法，分别实现了
+      // 读取索引项中的相对offset和索引项中的物理地址(position)的功能
       }
   }
   
@@ -163,7 +171,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
     if (relativeOffset(idx, 0) > relOffset)
       return -1
       
-    // binary search for the entry
+    // binary search for the entry  标准的二分查找法
     var lo = 0
     var hi = _entries - 1
     while (lo < hi) {
@@ -176,7 +184,7 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
       else
         hi = mid - 1
     }
-    lo
+    lo//如果找不到targetOffset对应的索引项，则返回小于targetOffset的最大的索引项位置
   }
   
   /* return the nth offset relative to the base offset */
