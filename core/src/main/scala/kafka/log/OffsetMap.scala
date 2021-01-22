@@ -25,11 +25,13 @@ import org.apache.kafka.common.utils.Utils
 
 trait OffsetMap {
   def slots: Int
-  def put(key: ByteBuffer, offset: Long)
+  def put(key: ByteBuffer, offset: Long): Unit
   def get(key: ByteBuffer): Long
-  def clear()
+  def updateLatestOffset(offset: Long): Unit
+  def clear(): Unit
   def size: Int
   def utilization: Double = size.toDouble / slots
+  def latestOffset: Long
 }
 
 /**
@@ -60,7 +62,10 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
   
   /* the number of probes for all lookups */
   private var probes = 0L
-  
+
+  /* the latest offset written into the map */
+  private var lastOffset = -1L
+
   /**
    * The number of bytes of space each entry uses (the number of bytes in the hash plus an 8 byte offset)
    */
@@ -76,7 +81,7 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
    * @param key The key
    * @param offset The offset
    */
-  override def put(key: ByteBuffer, offset: Long) {
+  override def put(key: ByteBuffer, offset: Long): Unit = {
     require(entries < slots, "Attempt to add a new entry to a full offset map.")
     lookups += 1
     hashInto(key, hash1)
@@ -89,6 +94,7 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
       if(Arrays.equals(hash1, hash2)) {
         // we found an existing entry, overwrite it and return (size does not change)
         bytes.putLong(offset)
+        lastOffset = offset
         return
       }
       attempt += 1
@@ -98,6 +104,7 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
     bytes.position(pos)
     bytes.put(hash1)
     bytes.putLong(offset)
+    lastOffset = offset
     entries += 1
   }
   
@@ -106,7 +113,7 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
    */
   private def isEmpty(position: Int): Boolean = 
     bytes.getLong(position) == 0 && bytes.getLong(position + 8) == 0 && bytes.getLong(position + 16) == 0
-  
+
   /**
    * Get the offset associated with this key.
    * @param key The key
@@ -118,7 +125,12 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
     // search for the hash of this key by repeated probing until we find the hash we are looking for or we find an empty slot
     var attempt = 0
     var pos = 0
+    //we need to guard against attempt integer overflow if the map is full
+    //limit attempt to number of slots once positionOf(..) enters linear search mode
+    val maxAttempts = slots + hashSize - 4
     do {
+     if(attempt >= maxAttempts)
+        return -1L
       pos = positionOf(hash1, attempt)
       bytes.position(pos)
       if(isEmpty(pos))
@@ -131,13 +143,13 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
   
   /**
    * Change the salt used for key hashing making all existing keys unfindable.
-   * Doesn't actually zero out the array.
    */
-  override def clear() {
+  override def clear(): Unit = {
     this.entries = 0
     this.lookups = 0L
     this.probes = 0L
-    Arrays.fill(bytes.array, bytes.arrayOffset, bytes.arrayOffset + bytes.limit, 0.toByte)
+    this.lastOffset = -1L
+    Arrays.fill(bytes.array, bytes.arrayOffset, bytes.arrayOffset + bytes.limit(), 0.toByte)
   }
   
   /**
@@ -150,7 +162,16 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
    */
   def collisionRate: Double = 
     (this.probes - this.lookups) / this.lookups.toDouble
-  
+
+  /**
+   * The latest offset put into the map
+   */
+  override def latestOffset: Long = lastOffset
+
+  override def updateLatestOffset(offset: Long): Unit = {
+    lastOffset = offset
+  }
+
   /**
    * Calculate the ith probe position. We first try reading successive integers from the hash itself
    * then if all of those fail we degrade to linear probing.
@@ -170,7 +191,7 @@ class SkimpyOffsetMap(val memory: Int, val hashAlgorithm: String = "MD5") extend
    * @param key The key to hash
    * @param buffer The buffer to store the hash into
    */
-  private def hashInto(key: ByteBuffer, buffer: Array[Byte]) {
+  private def hashInto(key: ByteBuffer, buffer: Array[Byte]): Unit = {
     key.mark()
     digest.update(key)
     key.reset()

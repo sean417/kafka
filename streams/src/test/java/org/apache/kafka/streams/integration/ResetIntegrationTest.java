@@ -1,13 +1,13 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- * <p>
- * http://www.apache.org/licenses/LICENSE-2.0
- * <p>
+ * the License. You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -16,275 +16,293 @@
  */
 package org.apache.kafka.streams.integration;
 
-import kafka.admin.AdminClient;
+import kafka.server.KafkaConfig$;
 import kafka.tools.StreamsResetter;
-import kafka.utils.ZkUtils;
+
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.common.security.JaasUtils;
-import org.apache.kafka.common.serialization.LongDeserializer;
-import org.apache.kafka.common.serialization.LongSerializer;
-import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.common.serialization.StringSerializer;
-import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.integration.utils.EmbeddedSingleNodeKafkaCluster;
+import org.apache.kafka.streams.integration.utils.EmbeddedKafkaCluster;
 import org.apache.kafka.streams.integration.utils.IntegrationTestUtils;
-import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.KStreamBuilder;
-import org.apache.kafka.streams.kstream.KTable;
-import org.apache.kafka.streams.kstream.KeyValueMapper;
-import org.apache.kafka.streams.kstream.TimeWindows;
-import org.apache.kafka.streams.kstream.Windowed;
-import org.apache.kafka.test.TestCondition;
-import org.apache.kafka.test.TestUtils;
+import org.apache.kafka.test.IntegrationTest;
+
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
-import java.util.Collections;
-import java.util.HashSet;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
-import java.util.Set;
 
+import static org.apache.kafka.streams.integration.utils.IntegrationTestUtils.isEmptyConsumerGroup;
+import static org.apache.kafka.streams.integration.utils.IntegrationTestUtils.waitForEmptyConsumerGroup;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.MatcherAssert.assertThat;
-
 
 /**
  * Tests local state store and global application cleanup.
  */
-public class ResetIntegrationTest {
+@Category({IntegrationTest.class})
+public class ResetIntegrationTest extends AbstractResetIntegrationTest {
+
+    private static final String NON_EXISTING_TOPIC = "nonExistingTopic";
+
     @ClassRule
-    public static final EmbeddedSingleNodeKafkaCluster CLUSTER = new EmbeddedSingleNodeKafkaCluster();
+    public static final EmbeddedKafkaCluster CLUSTER;
 
-    private static final String APP_ID = "cleanup-integration-test";
-    private static final String INPUT_TOPIC = "inputTopic";
-    private static final String OUTPUT_TOPIC = "outputTopic";
-    private static final String OUTPUT_TOPIC_2 = "outputTopic2";
-    private static final String OUTPUT_TOPIC_2_RERUN = "outputTopic2_rerun";
-    private static final String INTERMEDIATE_USER_TOPIC = "userTopic";
+    static {
+        final Properties brokerProps = new Properties();
+        // we double the value passed to `time.sleep` in each iteration in one of the map functions, so we disable
+        // expiration of connections by the brokers to avoid errors when `AdminClient` sends requests after potentially
+        // very long sleep times
+        brokerProps.put(KafkaConfig$.MODULE$.ConnectionsMaxIdleMsProp(), -1L);
+        CLUSTER = new EmbeddedKafkaCluster(1, brokerProps);
+    }
 
-    private static final long STREAMS_CONSUMER_TIMEOUT = 2000L;
-    private static final long CLEANUP_CONSUMER_TIMEOUT = 2000L;
-
-    private final WaitUntilConsumerGroupGotClosed consumerGroupInactive = new WaitUntilConsumerGroupGotClosed();
-
-    private AdminClient adminClient = null;
-
-    @BeforeClass
-    public static void startKafkaCluster() throws Exception {
-        CLUSTER.createTopic(INPUT_TOPIC);
-        CLUSTER.createTopic(OUTPUT_TOPIC);
-        CLUSTER.createTopic(OUTPUT_TOPIC_2);
-        CLUSTER.createTopic(OUTPUT_TOPIC_2_RERUN);
-        CLUSTER.createTopic(INTERMEDIATE_USER_TOPIC);
+    @Override
+    Map<String, Object> getClientSslConfig() {
+        return null;
     }
 
     @Before
-    public void prepare() {
-        this.adminClient = AdminClient.createSimplePlaintext(CLUSTER.bootstrapServers());
+    public void before() throws Exception {
+        cluster = CLUSTER;
+        prepareTest();
     }
 
     @After
-    public void cleanup() {
-        if (this.adminClient != null) {
-            this.adminClient.close();
-            this.adminClient = null;
-        }
+    public void after() throws Exception {
+        cleanupTest();
     }
 
     @Test
-    public void testReprocessingFromScratchAfterReset() throws Exception {
-        final Properties streamsConfiguration = prepareTest();
-        final Properties resultTopicConsumerConfig = prepareResultConsumer();
+    public void shouldNotAllowToResetWhileStreamsIsRunning() {
+        final String appID = IntegrationTestUtils.safeUniqueTestName(getClass(), testName);
+        final String[] parameters = new String[] {
+            "--application-id", appID,
+            "--bootstrap-servers", cluster.bootstrapServers(),
+            "--input-topics", NON_EXISTING_TOPIC,
+            "--execute"
+        };
+        final Properties cleanUpConfig = new Properties();
+        cleanUpConfig.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 100);
+        cleanUpConfig.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Integer.toString(CLEANUP_CONSUMER_TIMEOUT));
 
-        prepareInputData();
-        final KStreamBuilder builder = setupTopology(OUTPUT_TOPIC_2);
+        streamsConfig.put(StreamsConfig.APPLICATION_ID_CONFIG, appID);
 
         // RUN
-        KafkaStreams streams = new KafkaStreams(builder, streamsConfiguration);
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
         streams.start();
-        final List<KeyValue<Long, Long>> result = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultTopicConsumerConfig, OUTPUT_TOPIC, 10);
-        // receive only first values to make sure intermediate user topic is not consumed completely
-        // => required to test "seekToEnd" for intermediate topics
-        final KeyValue<Object, Object> result2 = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultTopicConsumerConfig, OUTPUT_TOPIC_2, 1).get(0);
+
+        final int exitCode = new StreamsResetter().run(parameters, cleanUpConfig);
+        Assert.assertEquals(1, exitCode);
 
         streams.close();
-        TestUtils.waitForCondition(this.consumerGroupInactive, 5 * STREAMS_CONSUMER_TIMEOUT,
-            "Streams Application consumer group did not time out after " + (5 * STREAMS_CONSUMER_TIMEOUT) + " ms.");
+    }
+
+    @Test
+    public void shouldNotAllowToResetWhenInputTopicAbsent() throws Exception {
+        final String appID = IntegrationTestUtils.safeUniqueTestName(getClass(), testName);
+        final String[] parameters = new String[] {
+            "--application-id", appID,
+            "--bootstrap-servers", cluster.bootstrapServers(),
+            "--input-topics", NON_EXISTING_TOPIC,
+            "--execute"
+        };
+        final Properties cleanUpConfig = new Properties();
+        cleanUpConfig.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 100);
+        cleanUpConfig.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Integer.toString(CLEANUP_CONSUMER_TIMEOUT));
+
+        final int exitCode = new StreamsResetter().run(parameters, cleanUpConfig);
+        Assert.assertEquals(1, exitCode);
+    }
+
+    @Test
+    public void shouldNotAllowToResetWhenIntermediateTopicAbsent() throws Exception {
+        final String appID = IntegrationTestUtils.safeUniqueTestName(getClass(), testName);
+        final String[] parameters = new String[] {
+            "--application-id", appID,
+            "--bootstrap-servers", cluster.bootstrapServers(),
+            "--intermediate-topics", NON_EXISTING_TOPIC,
+            "--execute"
+        };
+        final Properties cleanUpConfig = new Properties();
+        cleanUpConfig.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 100);
+        cleanUpConfig.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Integer.toString(CLEANUP_CONSUMER_TIMEOUT));
+
+        final int exitCode = new StreamsResetter().run(parameters, cleanUpConfig);
+        Assert.assertEquals(1, exitCode);
+    }
+
+    @Test
+    public void testResetWhenLongSessionTimeoutConfiguredWithForceOption() throws Exception {
+        final String appID = IntegrationTestUtils.safeUniqueTestName(getClass(), testName);
+        streamsConfig.put(StreamsConfig.APPLICATION_ID_CONFIG, appID);
+        streamsConfig.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, Integer.toString(STREAMS_CONSUMER_TIMEOUT * 100));
+
+        // Run
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
+        streams.start();
+        final List<KeyValue<Long, Long>> result = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 10);
+
+        streams.close();
 
         // RESET
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
         streams.cleanUp();
-        cleanGlobal();
-        TestUtils.waitForCondition(this.consumerGroupInactive, 5 * CLEANUP_CONSUMER_TIMEOUT,
-            "Reset Tool consumer group did not time out after " + (5 * CLEANUP_CONSUMER_TIMEOUT) + " ms.");
 
-        assertInternalTopicsGotDeleted();
+        // Reset would fail since long session timeout has been configured
+        final boolean cleanResult = tryCleanGlobal(false, null, null, appID);
+        Assert.assertFalse(cleanResult);
+
+        // Reset will success with --force, it will force delete active members on broker side
+        cleanGlobal(false, "--force", null, appID);
+        assertThat("Group is not empty after cleanGlobal", isEmptyConsumerGroup(adminClient, appID));
+
+        assertInternalTopicsGotDeleted(null);
 
         // RE-RUN
-        streams = new KafkaStreams(setupTopology(OUTPUT_TOPIC_2_RERUN), streamsConfiguration);
         streams.start();
-        final List<KeyValue<Long, Long>> resultRerun = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultTopicConsumerConfig, OUTPUT_TOPIC, 10);
-        final KeyValue<Object, Object> resultRerun2 = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultTopicConsumerConfig, OUTPUT_TOPIC_2_RERUN, 1).get(0);
+        final List<KeyValue<Long, Long>> resultRerun = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 10);
         streams.close();
 
         assertThat(resultRerun, equalTo(result));
-        assertThat(resultRerun2, equalTo(result2));
+        cleanGlobal(false, "--force", null, appID);
     }
 
-    private Properties prepareTest() throws Exception {
-        final Properties streamsConfiguration = new Properties();
-        streamsConfiguration.put(StreamsConfig.APPLICATION_ID_CONFIG, APP_ID);
-        streamsConfiguration.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
-        streamsConfiguration.put(StreamsConfig.ZOOKEEPER_CONNECT_CONFIG, CLUSTER.zKConnectString());
-        streamsConfiguration.put(StreamsConfig.STATE_DIR_CONFIG, TestUtils.tempDirectory("kafka-test").getPath());
-        streamsConfiguration.put(StreamsConfig.KEY_SERDE_CLASS_CONFIG, Serdes.Long().getClass());
-        streamsConfiguration.put(StreamsConfig.VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
-        streamsConfiguration.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, 8);
-        streamsConfiguration.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1);
-        streamsConfiguration.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 100);
-        streamsConfiguration.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, "" + STREAMS_CONSUMER_TIMEOUT);
-        streamsConfiguration.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+    @Test
+    public void testReprocessingFromFileAfterResetWithoutIntermediateUserTopic() throws Exception {
+        final String appID = IntegrationTestUtils.safeUniqueTestName(getClass(), testName);
+        streamsConfig.put(StreamsConfig.APPLICATION_ID_CONFIG, appID);
 
-        IntegrationTestUtils.purgeLocalStreamsState(streamsConfiguration);
+        // RUN
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
+        streams.start();
+        final List<KeyValue<Long, Long>> result = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 10);
 
-        return streamsConfiguration;
-    }
+        streams.close();
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
 
-    private Properties prepareResultConsumer() {
-        final Properties resultTopicConsumerConfig = new Properties();
-        resultTopicConsumerConfig.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
-        resultTopicConsumerConfig.put(ConsumerConfig.GROUP_ID_CONFIG, APP_ID + "-standard-consumer-" + OUTPUT_TOPIC);
-        resultTopicConsumerConfig.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        resultTopicConsumerConfig.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, LongDeserializer.class);
-        resultTopicConsumerConfig.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, LongDeserializer.class);
-
-        return resultTopicConsumerConfig;
-    }
-
-    private void prepareInputData() throws Exception {
-        final Properties producerConfig = new Properties();
-        producerConfig.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
-        producerConfig.put(ProducerConfig.ACKS_CONFIG, "all");
-        producerConfig.put(ProducerConfig.RETRIES_CONFIG, 0);
-        producerConfig.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, LongSerializer.class);
-        producerConfig.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(0L, "aaa")), producerConfig, 10L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(1L, "bbb")), producerConfig, 20L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(0L, "ccc")), producerConfig, 30L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(1L, "ddd")), producerConfig, 40L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(0L, "eee")), producerConfig, 50L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(1L, "fff")), producerConfig, 60L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(0L, "ggg")), producerConfig, 61L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(1L, "hhh")), producerConfig, 62L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(0L, "iii")), producerConfig, 63L);
-        IntegrationTestUtils.produceKeyValuesSynchronouslyWithTimestamp(INPUT_TOPIC, Collections.singleton(new KeyValue<>(1L, "jjj")), producerConfig, 64L);
-    }
-
-    private KStreamBuilder setupTopology(final String outputTopic2) {
-        final KStreamBuilder builder = new KStreamBuilder();
-
-        final KStream<Long, String> input = builder.stream(INPUT_TOPIC);
-
-        // use map to trigger internal re-partitioning before groupByKey
-        final KTable<Long, Long> globalCounts = input
-            .map(new KeyValueMapper<Long, String, KeyValue<Long, String>>() {
-                @Override
-                public KeyValue<Long, String> apply(final Long key, final String value) {
-                    return new KeyValue<>(key, value);
-                }
-            })
-            .countByKey("global-count");
-        globalCounts.to(Serdes.Long(), Serdes.Long(), OUTPUT_TOPIC);
-
-        final KStream<Long, Long> windowedCounts = input
-            .through(INTERMEDIATE_USER_TOPIC)
-            .map(new KeyValueMapper<Long, String, KeyValue<Long, String>>() {
-                private long sleep = 1000;
-
-                @Override
-                public KeyValue<Long, String> apply(final Long key, final String value) {
-                    // must sleep long enough to avoid processing the whole intermediate topic before application gets stopped
-                    // => want to test "skip over" unprocessed records
-                    // increasing the sleep time only has disadvantage that test run time is increased
-                    Utils.sleep(this.sleep);
-                    this.sleep *= 2;
-                    return new KeyValue<>(key, value);
-                }
-            })
-            .countByKey(TimeWindows.of("count", 35).advanceBy(10))
-            .toStream()
-            .map(new KeyValueMapper<Windowed<Long>, Long, KeyValue<Long, Long>>() {
-                @Override
-                public KeyValue<Long, Long> apply(final Windowed<Long> key, final Long value) {
-                    return new KeyValue<>(key.window().start() + key.window().end(), value);
-                }
-            });
-        windowedCounts.to(Serdes.Long(), Serdes.Long(), outputTopic2);
-
-        return builder;
-    }
-
-    private void cleanGlobal() {
-        final Properties cleanUpConfig = new Properties();
-        cleanUpConfig.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 100);
-        cleanUpConfig.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, "" + CLEANUP_CONSUMER_TIMEOUT);
-
-        final int exitCode = new StreamsResetter().run(
-            new String[]{
-                "--application-id", APP_ID,
-                "--bootstrap-server", CLUSTER.bootstrapServers(),
-                "--zookeeper", CLUSTER.zKConnectString(),
-                "--input-topics", INPUT_TOPIC,
-                "--intermediate-topics", INTERMEDIATE_USER_TOPIC
-            },
-            cleanUpConfig);
-        Assert.assertEquals(0, exitCode);
-    }
-
-    private void assertInternalTopicsGotDeleted() {
-        final Set<String> expectedRemainingTopicsAfterCleanup = new HashSet<>();
-        expectedRemainingTopicsAfterCleanup.add(INPUT_TOPIC);
-        expectedRemainingTopicsAfterCleanup.add(INTERMEDIATE_USER_TOPIC);
-        expectedRemainingTopicsAfterCleanup.add(OUTPUT_TOPIC);
-        expectedRemainingTopicsAfterCleanup.add(OUTPUT_TOPIC_2);
-        expectedRemainingTopicsAfterCleanup.add(OUTPUT_TOPIC_2_RERUN);
-        expectedRemainingTopicsAfterCleanup.add("__consumer_offsets");
-
-        Set<String> allTopics;
-        ZkUtils zkUtils = null;
-        try {
-            zkUtils = ZkUtils.apply(CLUSTER.zKConnectString(),
-                30000,
-                30000,
-                JaasUtils.isZkSecurityEnabled());
-
-            do {
-                Utils.sleep(100);
-                allTopics = new HashSet<>();
-                allTopics.addAll(scala.collection.JavaConversions.seqAsJavaList(zkUtils.getAllTopics()));
-            } while (allTopics.size() != expectedRemainingTopicsAfterCleanup.size());
-        } finally {
-            if (zkUtils != null) {
-                zkUtils.close();
-            }
+        // RESET
+        final File resetFile = File.createTempFile("reset", ".csv");
+        try (final BufferedWriter writer = new BufferedWriter(new FileWriter(resetFile))) {
+            writer.write(INPUT_TOPIC + ",0,1");
         }
-        assertThat(allTopics, equalTo(expectedRemainingTopicsAfterCleanup));
+
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
+        streams.cleanUp();
+
+        cleanGlobal(false, "--from-file", resetFile.getAbsolutePath(), appID);
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+
+        assertInternalTopicsGotDeleted(null);
+
+        resetFile.deleteOnExit();
+
+        // RE-RUN
+        streams.start();
+        final List<KeyValue<Long, Long>> resultRerun = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 5);
+        streams.close();
+
+        result.remove(0);
+        assertThat(resultRerun, equalTo(result));
+
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+        cleanGlobal(false, null, null, appID);
     }
 
-    private class WaitUntilConsumerGroupGotClosed implements TestCondition {
-        @Override
-        public boolean conditionMet() {
-            return ResetIntegrationTest.this.adminClient.describeGroup(APP_ID).members().isEmpty();
+    @Test
+    public void testReprocessingFromDateTimeAfterResetWithoutIntermediateUserTopic() throws Exception {
+        final String appID = IntegrationTestUtils.safeUniqueTestName(getClass(), testName);
+        streamsConfig.put(StreamsConfig.APPLICATION_ID_CONFIG, appID);
+
+        // RUN
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
+        streams.start();
+        final List<KeyValue<Long, Long>> result = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 10);
+
+        streams.close();
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+
+        // RESET
+        final File resetFile = File.createTempFile("reset", ".csv");
+        try (final BufferedWriter writer = new BufferedWriter(new FileWriter(resetFile))) {
+            writer.write(INPUT_TOPIC + ",0,1");
         }
+
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
+        streams.cleanUp();
+
+
+        final SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+        final Calendar calendar = Calendar.getInstance();
+        calendar.add(Calendar.DATE, -1);
+
+        cleanGlobal(false, "--to-datetime", format.format(calendar.getTime()), appID);
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+
+        assertInternalTopicsGotDeleted(null);
+
+        resetFile.deleteOnExit();
+
+        // RE-RUN
+        streams.start();
+        final List<KeyValue<Long, Long>> resultRerun = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 10);
+        streams.close();
+
+        assertThat(resultRerun, equalTo(result));
+
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+        cleanGlobal(false, null, null, appID);
+    }
+
+    @Test
+    public void testReprocessingByDurationAfterResetWithoutIntermediateUserTopic() throws Exception {
+        final String appID = IntegrationTestUtils.safeUniqueTestName(getClass(), testName);
+        streamsConfig.put(StreamsConfig.APPLICATION_ID_CONFIG, appID);
+
+        // RUN
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
+        streams.start();
+        final List<KeyValue<Long, Long>> result = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 10);
+
+        streams.close();
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+
+        // RESET
+        final File resetFile = File.createTempFile("reset", ".csv");
+        try (final BufferedWriter writer = new BufferedWriter(new FileWriter(resetFile))) {
+            writer.write(INPUT_TOPIC + ",0,1");
+        }
+
+        streams = new KafkaStreams(setupTopologyWithoutIntermediateUserTopic(), streamsConfig);
+        streams.cleanUp();
+        cleanGlobal(false, "--by-duration", "PT1M", appID);
+
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+
+        assertInternalTopicsGotDeleted(null);
+
+        resetFile.deleteOnExit();
+
+        // RE-RUN
+        streams.start();
+        final List<KeyValue<Long, Long>> resultRerun = IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(resultConsumerConfig, OUTPUT_TOPIC, 10);
+        streams.close();
+
+        assertThat(resultRerun, equalTo(result));
+
+        waitForEmptyConsumerGroup(adminClient, appID, TIMEOUT_MULTIPLIER * STREAMS_CONSUMER_TIMEOUT);
+        cleanGlobal(false, null, null, appID);
     }
 
 }

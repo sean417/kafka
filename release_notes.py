@@ -32,7 +32,7 @@ if len(sys.argv) < 2:
     sys.exit(1)
 
 version = sys.argv[1]
-minor_version_dotless = "".join(version.split(".")[:3]) # i.e., 0.10.0 if version == 0.10.0.1
+minor_version_dotless = "".join(version.split(".")[:2]) # i.e., 10 if version == 1.0.1
 
 JIRA_BASE_URL = 'https://issues.apache.org/jira'
 MAX_RESULTS = 100 # This is constrained for cloud instances so we need to fix this value
@@ -61,11 +61,28 @@ if __name__ == "__main__":
         print >>sys.stderr, "Didn't find any issues for the target fix version"
         sys.exit(1)
 
-    unresolved_issues = [issue for issue in issues if issue.fields.resolution is None]
+    # Some resolutions, including a lack of resolution, indicate that the bug hasn't actually been addressed and we shouldn't even be able to create a release until they are fixed
+    UNRESOLVED_RESOLUTIONS = [None,
+                              "Unresolved",
+                              "Duplicate",
+                              "Invalid",
+                              "Not A Problem",
+                              "Not A Bug",
+                              "Won't Fix",
+                              "Incomplete",
+                              "Cannot Reproduce",
+                              "Later",
+                              "Works for Me",
+                              "Workaround",
+                              "Information Provided"
+                              ]
+    unresolved_issues = [issue for issue in issues if issue.fields.resolution in UNRESOLVED_RESOLUTIONS or issue.fields.resolution.name in UNRESOLVED_RESOLUTIONS]
     if unresolved_issues:
-        print >>sys.stderr, "The release is not completed since unresolved issues were found still tagged with this release as the fix version:"
+        print >>sys.stderr, "The release is not completed since unresolved issues or improperly resolved issues were found still tagged with this release as the fix version:"
         for issue in unresolved_issues:
-            print >>sys.stderr, "Unresolved issue: %s %s" % (issue.key, issue_link(issue))
+            print >>sys.stderr, "Unresolved issue: %15s %20s %s" % (issue.key, issue.fields.resolution, issue_link(issue))
+        print >>sys.stderr
+        print >>sys.stderr, "Note that for some resolutions, you should simply remove the fix version as they have not been truly fixed in this release."
         sys.exit(1)
 
     # Get list of (issue type, [issues]) sorted by the issue ID type, with each subset of issues sorted by their key so they
@@ -81,16 +98,16 @@ if __name__ == "__main__":
 
     print "<h1>Release Notes - Kafka - Version %s</h1>" % version
     print """<p>Below is a summary of the JIRA issues addressed in the %(version)s release of Kafka. For full documentation of the
-    release, a guide to get started, and information about the project, see the <a href="http://kafka.apache.org/">Kafka
+    release, a guide to get started, and information about the project, see the <a href="https://kafka.apache.org/">Kafka
     project site</a>.</p>
 
     <p><b>Note about upgrades:</b> Please carefully review the
-    <a href="http://kafka.apache.org/%(minor)s/documentation.html#upgrade">upgrade documentation</a> for this release thoroughly
+    <a href="https://kafka.apache.org/%(minor)s/documentation.html#upgrade">upgrade documentation</a> for this release thoroughly
     before upgrading your cluster. The upgrade notes discuss any critical information about incompatibilities and breaking
     changes, performance changes, and any other changes that might impact your production deployment of Kafka.</p>
 
     <p>The documentation for the most recent release can be found at
-    <a href="http://kafka.apache.org/documentation.html">http://kafka.apache.org/documentation.html</a>.</p>""" % { 'version': version, 'minor': minor_version_dotless }
+    <a href="https://kafka.apache.org/documentation.html">https://kafka.apache.org/documentation.html</a>.</p>""" % { 'version': version, 'minor': minor_version_dotless }
     for itype, issues in by_group:
         print "<h2>%s</h2>" % itype
         print "<ul>"

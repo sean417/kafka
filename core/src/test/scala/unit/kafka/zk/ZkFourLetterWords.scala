@@ -28,7 +28,7 @@ import java.net.{SocketTimeoutException, Socket, InetAddress, InetSocketAddress}
   * clients, while "srvr" and "cons" give extended details on server and connections respectively.
   */
 object ZkFourLetterWords {
-  def sendStat(host: String, port: Int, timeout: Int) {
+  def sendStat(host: String, port: Int, timeout: Int): Unit = {
     val hostAddress =
       if (host != null) new InetSocketAddress(host, port)
       else new InetSocketAddress(InetAddress.getByName(null), port)
@@ -39,7 +39,7 @@ object ZkFourLetterWords {
       outStream.write("stat".getBytes)
       outStream.flush()
     } catch {
-      case e: SocketTimeoutException => throw new IOException("Exception while sending 4lw")
+      case e: SocketTimeoutException => throw new IOException("Exception while sending 4lw", e)
     } finally {
       sock.close
     }

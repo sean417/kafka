@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -24,8 +24,42 @@ import org.apache.kafka.common.KafkaException;
 public class QuotaViolationException extends KafkaException {
 
     private static final long serialVersionUID = 1L;
+    private final KafkaMetric metric;
+    private final double value;
+    private final double bound;
 
-    public QuotaViolationException(String m) {
-        super(m);
+    public QuotaViolationException(KafkaMetric metric, double value, double bound) {
+        this.metric = metric;
+        this.value = value;
+        this.bound = bound;
+    }
+
+    public KafkaMetric metric() {
+        return metric;
+    }
+
+    public double value() {
+        return value;
+    }
+
+    public double bound() {
+        return bound;
+    }
+
+    @Override
+    public String toString() {
+        return getClass().getName()
+                + ": '"
+                + metric.metricName()
+                + "' violated quota. Actual: "
+                + value
+                + ", Threshold: "
+                + bound;
+    }
+
+    /* avoid the expensive and stack trace for quota violation exceptions */
+    @Override
+    public Throwable fillInStackTrace() {
+        return this;
     }
 }

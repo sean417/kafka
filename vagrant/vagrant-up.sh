@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -13,8 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#! /usr/bin/env bash
-
 set -o nounset
 set -o errexit  # exit script if any command exits with nonzero value
 
@@ -27,6 +26,7 @@ readonly ARGS="$@"
 AWS=false
 PARALLEL=true
 MAX_PARALLEL=5
+DEBUG=false
 
 readonly USAGE="Usage: $PROG_NAME [-h | --help] [--aws [--no-parallel] [--max-parallel MAX]]"
 readonly HELP="$(cat <<EOF
@@ -36,7 +36,7 @@ Tool to bring up a vagrant cluster on local machine or aws.
     --aws                   Use if you are running in aws
     --no-parallel           Bring up machines not in parallel. Only applicable on aws
     --max-parallel  MAX     Maximum number of machines to bring up in parallel. Note: only applicable on test worker machines on aws. default: $MAX_PARALLEL
-
+    --debug                 Enable debug information for vagrant
 Approximately speaking, this wrapper script essentially wraps 2 commands:
     vagrant up
     vagrant hostmanager
@@ -71,6 +71,9 @@ while [[ $# > 0 ]]; do
         --max-parallel)
             MAX_PARALLEL="$2"
             shift
+            ;;
+        --debug)
+            DEBUG=true
             ;;
         *)
             # unknown option
@@ -201,7 +204,14 @@ function bring_up_aws {
     local parallel="$1"
     local max_parallel="$2"
     local machines="$(read_vagrant_machines)"
-
+    case "$3" in
+          true)
+            local debug="--debug"
+            ;;
+          false)
+            local debug=""
+            ;;
+    esac
     zk_broker_machines=$(zk_broker "$machines")
     worker_machines=$(worker "$machines")
 
@@ -209,8 +219,8 @@ function bring_up_aws {
         if [[ ! -z "$zk_broker_machines" ]]; then
             # We still have to bring up zookeeper/broker nodes serially
             echo "Bringing up zookeeper/broker machines serially"
-            vagrant up --provider=aws --no-parallel --no-provision $zk_broker_machines
-            vagrant hostmanager
+            vagrant up --provider=aws --no-parallel --no-provision $zk_broker_machines $debug
+            vagrant hostmanager --provider=aws
             vagrant provision
         fi
 
@@ -219,13 +229,13 @@ function bring_up_aws {
 	    # Try to isolate this job in its own /tmp space. See note
 	    # below about vagrant issue
             local vagrant_rsync_temp_dir=$(mktemp -d);
-            TMPDIR=$vagrant_rsync_temp_dir vagrant_batch_command "vagrant up --provider=aws" "$worker_machines" "$max_parallel"
+            TMPDIR=$vagrant_rsync_temp_dir vagrant_batch_command "vagrant up $debug --provider=aws" "$worker_machines" "$max_parallel"
             rm -rf $vagrant_rsync_temp_dir
-            vagrant hostmanager
+            vagrant hostmanager --provider=aws
         fi
     else
-        vagrant up --provider=aws --no-parallel --no-provision
-        vagrant hostmanager
+        vagrant up --provider=aws --no-parallel --no-provision $debug
+        vagrant hostmanager --provider=aws
         vagrant provision
     fi
 
@@ -247,7 +257,7 @@ function bring_up_aws {
 
 function main {
     if [[ "$AWS" == "true" ]]; then
-        bring_up_aws "$PARALLEL" "$MAX_PARALLEL"
+        bring_up_aws "$PARALLEL" "$MAX_PARALLEL" "$DEBUG"
     else
         bring_up_local
     fi

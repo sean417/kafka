@@ -32,14 +32,13 @@ package kafka.server
  *                +-----+-----+  | +----+------------+
  *                      |        +>+RecoveringFrom   |
  *                      v          |UncleanShutdown  |
- * +----------+     +-----+-----+  +-------+---------+
- * |RunningAs |     |RunningAs  |            |
- * |Controller+<--->+Broker     +<-----------+
- * +----------+     +-----+-----+
- *        |              |
- *        |              v
- *        |       +-----+------------+
- *        |-----> |PendingControlled |
+ *               +-------+-------+ +-------+---------+
+ *               |RunningAsBroker|            |
+ *               +-------+-------+<-----------+
+ *                       |
+ *                       v
+ *                +-----+------------+
+ *                |PendingControlled |
  *                |Shutdown          |
  *                +-----+------------+
  *                      |
@@ -61,7 +60,6 @@ case object NotRunning extends BrokerStates { val state: Byte = 0 }
 case object Starting extends BrokerStates { val state: Byte = 1 }
 case object RecoveringFromUncleanShutdown extends BrokerStates { val state: Byte = 2 }
 case object RunningAsBroker extends BrokerStates { val state: Byte = 3 }
-case object RunningAsController extends BrokerStates { val state: Byte = 4 }
 case object PendingControlledShutdown extends BrokerStates { val state: Byte = 6 }
 case object BrokerShuttingDown extends BrokerStates { val state: Byte = 7 }
 
@@ -69,12 +67,12 @@ case object BrokerShuttingDown extends BrokerStates { val state: Byte = 7 }
 case class BrokerState() {
   @volatile var currentState: Byte = NotRunning.state
 
-  def newState(newState: BrokerStates) {
+  def newState(newState: BrokerStates): Unit = {
     this.newState(newState.state)
   }
 
   // Allowing undefined custom state
-  def newState(newState: Byte) {
+  def newState(newState: Byte): Unit = {
     currentState = newState
   }
 }

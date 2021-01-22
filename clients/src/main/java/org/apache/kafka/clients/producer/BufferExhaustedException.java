@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -16,13 +16,17 @@
  */
 package org.apache.kafka.clients.producer;
 
-import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.errors.TimeoutException;
 
 /**
- * This exception is thrown if the producer is in non-blocking mode and the rate of data production exceeds the rate at
- * which data can be sent for long enough for the alloted buffer to be exhausted.
+ * This exception is thrown if the producer cannot allocate memory for a record within max.block.ms due to the buffer
+ * being too full.
+ *
+ * In earlier versions a TimeoutException was thrown instead of this. To keep existing catch-clauses working
+ * this class extends TimeoutException.
+ *
  */
-public class BufferExhaustedException extends KafkaException {
+public class BufferExhaustedException extends TimeoutException {
 
     private static final long serialVersionUID = 1L;
 

@@ -16,76 +16,84 @@
   */
 package kafka.server
 
-import java.io.IOException
 import java.net.Socket
 import java.util.Collections
-import org.apache.kafka.common.protocol.{ApiKeys, Errors, SecurityProtocol}
-import org.apache.kafka.common.requests.{ApiVersionsRequest, ApiVersionsResponse}
-import org.apache.kafka.common.requests.SaslHandshakeRequest
-import org.apache.kafka.common.requests.SaslHandshakeResponse
-import org.junit.Test
+
+import kafka.api.{KafkaSasl, SaslSetup}
+import kafka.utils.JaasTestUtils
+import org.apache.kafka.common.message.SaslHandshakeRequestData
+import org.apache.kafka.common.protocol.Errors
+import org.apache.kafka.common.requests.{ApiVersionsRequest, ApiVersionsResponse, SaslHandshakeRequest, SaslHandshakeResponse}
+import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.junit.Assert._
-import kafka.api.SaslTestHarness
+import org.junit.{After, Before, Test}
 
-class SaslApiVersionsRequestTest extends BaseRequestTest with SaslTestHarness {
+class SaslApiVersionsRequestTest extends AbstractApiVersionsRequestTest with SaslSetup {
   override protected def securityProtocol = SecurityProtocol.SASL_PLAINTEXT
-  override protected val kafkaClientSaslMechanism = "PLAIN"
-  override protected val kafkaServerSaslMechanisms = List("PLAIN")
-  override protected val saslProperties = Some(kafkaSaslProperties(kafkaClientSaslMechanism, Some(kafkaServerSaslMechanisms)))
-  override protected val zkSaslEnabled = false
-  override def numBrokers = 1
+  private val kafkaClientSaslMechanism = "PLAIN"
+  private val kafkaServerSaslMechanisms = List("PLAIN")
+  protected override val serverSaslProperties = Some(kafkaServerSaslProperties(kafkaServerSaslMechanisms, kafkaClientSaslMechanism))
+  protected override val clientSaslProperties = Some(kafkaClientSaslProperties(kafkaClientSaslMechanism))
+  override def brokerCount = 1
+
+  @Before
+  override def setUp(): Unit = {
+    startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), KafkaSasl, JaasTestUtils.KafkaServerContextName))
+    super.setUp()
+  }
+
+  @After
+  override def tearDown(): Unit = {
+    super.tearDown()
+    closeSasl()
+  }
 
   @Test
-  def testApiVersionsRequestBeforeSaslHandshakeRequest() {
-    val plaintextSocket = connect(protocol = securityProtocol)
+  def testApiVersionsRequestBeforeSaslHandshakeRequest(): Unit = {
+    val socket = connect()
     try {
-      val apiVersionsResponse = sendApiVersionsRequest(plaintextSocket, new ApiVersionsRequest, 0)
-      ApiVersionsRequestTest.validateApiVersionsResponse(apiVersionsResponse)
-      sendSaslHandshakeRequestValidateResponse(plaintextSocket)
+      val apiVersionsResponse = sendAndReceive[ApiVersionsResponse](
+        new ApiVersionsRequest.Builder().build(0), socket)
+      validateApiVersionsResponse(apiVersionsResponse)
+      sendSaslHandshakeRequestValidateResponse(socket)
     } finally {
-      plaintextSocket.close()
+      socket.close()
     }
   }
 
   @Test
-  def testApiVersionsRequestAfterSaslHandshakeRequest() {
-    val plaintextSocket = connect(protocol = securityProtocol)
+  def testApiVersionsRequestAfterSaslHandshakeRequest(): Unit = {
+    val socket = connect()
     try {
-      sendSaslHandshakeRequestValidateResponse(plaintextSocket)
-      try {
-        sendApiVersionsRequest(plaintextSocket, new ApiVersionsRequest, 0)
-        fail("Versions Request during Sasl handshake did not fail")
-      } catch {
-        case ioe: IOException => // expected exception
-      }
+      sendSaslHandshakeRequestValidateResponse(socket)
+      val response = sendAndReceive[ApiVersionsResponse](
+        new ApiVersionsRequest.Builder().build(0), socket)
+      assertEquals(Errors.ILLEGAL_SASL_STATE.code, response.data.errorCode)
     } finally {
-      plaintextSocket.close()
+      socket.close()
     }
   }
 
   @Test
-  def testApiVersionsRequestWithUnsupportedVersion() {
-    val plaintextSocket = connect(protocol = securityProtocol)
+  def testApiVersionsRequestWithUnsupportedVersion(): Unit = {
+    val socket = connect()
     try {
-      val apiVersionsResponse = sendApiVersionsRequest(plaintextSocket, new ApiVersionsRequest, Short.MaxValue)
-      assertEquals(Errors.UNSUPPORTED_VERSION.code(), apiVersionsResponse.errorCode)
-      val apiVersionsResponse2 = sendApiVersionsRequest(plaintextSocket, new ApiVersionsRequest, 0)
-      ApiVersionsRequestTest.validateApiVersionsResponse(apiVersionsResponse2)
-      sendSaslHandshakeRequestValidateResponse(plaintextSocket)
+      val apiVersionsRequest = new ApiVersionsRequest.Builder().build(0)
+      val apiVersionsResponse = sendUnsupportedApiVersionRequest(apiVersionsRequest)
+      assertEquals(Errors.UNSUPPORTED_VERSION.code, apiVersionsResponse.data.errorCode)
+      val apiVersionsResponse2 = sendAndReceive[ApiVersionsResponse](
+        new ApiVersionsRequest.Builder().build(0), socket)
+      validateApiVersionsResponse(apiVersionsResponse2)
+      sendSaslHandshakeRequestValidateResponse(socket)
     } finally {
-      plaintextSocket.close()
+      socket.close()
     }
   }
 
-  private def sendApiVersionsRequest(socket: Socket, request: ApiVersionsRequest, version: Short): ApiVersionsResponse = {
-    val response = send(socket, request, ApiKeys.API_VERSIONS, version)
-    ApiVersionsResponse.parse(response)
-  }
-
-  private def sendSaslHandshakeRequestValidateResponse(socket: Socket) {
-    val response = send(socket, new SaslHandshakeRequest("PLAIN"), ApiKeys.SASL_HANDSHAKE, 0)
-    val handshakeResponse = SaslHandshakeResponse.parse(response)
-    assertEquals(Errors.NONE.code, handshakeResponse.errorCode())
-    assertEquals(Collections.singletonList("PLAIN"), handshakeResponse.enabledMechanisms())
+  private def sendSaslHandshakeRequestValidateResponse(socket: Socket): Unit = {
+    val request = new SaslHandshakeRequest(new SaslHandshakeRequestData().setMechanism("PLAIN"))
+    val response = sendAndReceive[SaslHandshakeResponse](request, socket)
+    assertEquals(Errors.NONE, response.error)
+    assertEquals(Collections.singletonList("PLAIN"), response.enabledMechanisms)
   }
 }

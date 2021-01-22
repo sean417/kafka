@@ -1,27 +1,27 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- * <p/>
- * http://www.apache.org/licenses/LICENSE-2.0
- * <p/>
+ * the License. You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- **/
-
+ */
 package org.apache.kafka.connect.runtime;
 
-import org.apache.kafka.common.annotation.InterfaceStability;
+import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.connect.runtime.rest.RestServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URI;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -29,7 +29,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * This class ties together all the components of a Kafka Connect process (herder, worker,
  * storage, command interface), managing their lifecycle.
  */
-@InterfaceStability.Unstable
 public class Connect {
     private static final Logger log = LoggerFactory.getLogger(Connect.class);
 
@@ -50,10 +49,10 @@ public class Connect {
     public void start() {
         try {
             log.info("Kafka Connect starting");
-            Runtime.getRuntime().addShutdownHook(shutdownHook);
+            Exit.addShutdownHook("connect-shutdown-hook", shutdownHook);
 
             herder.start();
-            rest.start(herder);
+            rest.initializeResources(herder);
 
             log.info("Kafka Connect started");
         } finally {
@@ -83,6 +82,19 @@ public class Connect {
         } catch (InterruptedException e) {
             log.error("Interrupted waiting for Kafka Connect to shutdown");
         }
+    }
+
+    public boolean isRunning() {
+        return herder.isRunning();
+    }
+
+    // Visible for testing
+    public URI restUrl() {
+        return rest.serverUrl();
+    }
+
+    public URI adminUrl() {
+        return rest.adminUrl();
     }
 
     private class ShutdownHook extends Thread {

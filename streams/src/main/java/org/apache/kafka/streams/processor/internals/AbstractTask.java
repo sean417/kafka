@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -14,116 +14,178 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.clients.consumer.Consumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.errors.ProcessorStateException;
-import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.streams.errors.TaskMigratedException;
 import org.apache.kafka.streams.processor.StateStore;
-import org.apache.kafka.streams.processor.StateStoreSupplier;
 import org.apache.kafka.streams.processor.TaskId;
+import org.slf4j.Logger;
 
-import java.io.File;
-import java.io.IOException;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-public abstract class AbstractTask {
-    protected final TaskId id;
-    protected final String applicationId;
-    protected final ProcessorTopology topology;
-    protected final Consumer consumer;
-    protected final ProcessorStateManager stateMgr;
-    protected final Set<TopicPartition> partitions;
-    protected ProcessorContext processorContext;
+import static org.apache.kafka.streams.processor.internals.Task.State.CLOSED;
+import static org.apache.kafka.streams.processor.internals.Task.State.CREATED;
+
+public abstract class AbstractTask implements Task {
+    private final static long NO_DEADLINE = -1L;
+
+    private Task.State state = CREATED;
+    private long deadlineMs = NO_DEADLINE;
+    protected Set<TopicPartition> inputPartitions;
 
     /**
-     * @throws ProcessorStateException if the state manager cannot be created
+     * If the checkpoint has not been loaded from the file yet (null), then we should not overwrite the checkpoint;
+     * If the checkpoint has been loaded from the file and has never been re-written (empty map), then we should re-write the checkpoint;
+     * If the checkpoint has been loaded from the file but has not been updated since, then we do not need to checkpoint;
+     * If the checkpoint has been loaded from the file and has been updated since, then we could overwrite the checkpoint;
      */
-    protected AbstractTask(TaskId id,
-                           String applicationId,
-                           Collection<TopicPartition> partitions,
-                           ProcessorTopology topology,
-                           Consumer<byte[], byte[]> consumer,
-                           Consumer<byte[], byte[]> restoreConsumer,
-                           StreamsConfig config,
-                           boolean isStandby) {
+    protected Map<TopicPartition, Long> offsetSnapshotSinceLastFlush = null;
+
+    protected final TaskId id;
+    protected final ProcessorTopology topology;
+    protected final StateDirectory stateDirectory;
+    protected final ProcessorStateManager stateMgr;
+    private final long taskTimeoutMs;
+
+    AbstractTask(final TaskId id,
+                 final ProcessorTopology topology,
+                 final StateDirectory stateDirectory,
+                 final ProcessorStateManager stateMgr,
+                 final Set<TopicPartition> inputPartitions,
+                 final long taskTimeoutMs) {
         this.id = id;
-        this.applicationId = applicationId;
-        this.partitions = new HashSet<>(partitions);
+        this.stateMgr = stateMgr;
         this.topology = topology;
-        this.consumer = consumer;
+        this.inputPartitions = inputPartitions;
+        this.stateDirectory = stateDirectory;
+        this.taskTimeoutMs = taskTimeoutMs;
+    }
 
-        // create the processor state manager
-        try {
-            File applicationStateDir = StreamThread.makeStateDir(applicationId, config.getString(StreamsConfig.STATE_DIR_CONFIG));
-            File stateFile = new File(applicationStateDir.getCanonicalPath(), id.toString());
-            // if partitions is null, this is a standby task
-            this.stateMgr = new ProcessorStateManager(applicationId, id.partition, partitions, stateFile, restoreConsumer, isStandby);
-        } catch (IOException e) {
-            throw new ProcessorStateException("Error while creating the state manager", e);
+    /**
+     * The following exceptions maybe thrown from the state manager flushing call
+     *
+     * @throws TaskMigratedException recoverable error sending changelog records that would cause the task to be removed
+     * @throws StreamsException fatal error when flushing the state store, for example sending changelog records failed
+     *                          or flushing state store get IO errors; such error should cause the thread to die
+     */
+    protected void maybeWriteCheckpoint(final boolean enforceCheckpoint) {
+        final Map<TopicPartition, Long> offsetSnapshot = stateMgr.changelogOffsets();
+        if (StateManagerUtil.checkpointNeeded(enforceCheckpoint, offsetSnapshotSinceLastFlush, offsetSnapshot)) {
+            // the state's current offset would be used to checkpoint
+            stateMgr.flush();
+            stateMgr.checkpoint();
+            offsetSnapshotSinceLastFlush = new HashMap<>(offsetSnapshot);
         }
     }
 
-    protected void initializeStateStores() {
-        // set initial offset limits
-        initializeOffsetLimits();
 
-        for (StateStoreSupplier stateStoreSupplier : this.topology.stateStoreSuppliers()) {
-            StateStore store = stateStoreSupplier.get();
-            store.init(this.processorContext, store);
-        }
-    }
-
-    public final TaskId id() {
+    @Override
+    public TaskId id() {
         return id;
     }
 
-    public final String applicationId() {
-        return applicationId;
+    @Override
+    public Set<TopicPartition> inputPartitions() {
+        return inputPartitions;
     }
 
-    public final Set<TopicPartition> partitions() {
-        return this.partitions;
+    @Override
+    public Collection<TopicPartition> changelogPartitions() {
+        return stateMgr.changelogPartitions();
     }
 
-    public final ProcessorTopology topology() {
-        return topology;
+    @Override
+    public void markChangelogAsCorrupted(final Collection<TopicPartition> partitions) {
+        stateMgr.markChangelogAsCorrupted(partitions);
     }
 
-    public final ProcessorContext context() {
-        return processorContext;
+    @Override
+    public StateStore getStore(final String name) {
+        return stateMgr.getStore(name);
     }
 
-    public abstract void commit();
+    @Override
+    public boolean isClosed() {
+        return state() == State.CLOSED;
+    }
 
-    /**
-     * @throws ProcessorStateException if there is an error while closing the state manager
-     */
-    public void close() {
-        try {
-            stateMgr.close(recordCollectorOffsets());
-        } catch (IOException e) {
-            throw new ProcessorStateException("Error while closing the state manager", e);
+    @Override
+    public final Task.State state() {
+        return state;
+    }
+
+    @Override
+    public void revive() {
+        if (state == CLOSED) {
+            transitionTo(CREATED);
+        } else {
+            throw new IllegalStateException("Illegal state " + state() + " while reviving task " + id);
         }
     }
 
-    protected Map<TopicPartition, Long> recordCollectorOffsets() {
-        return Collections.emptyMap();
-    }
+    final void transitionTo(final Task.State newState) {
+        final State oldState = state();
 
-    protected void initializeOffsetLimits() {
-        for (TopicPartition partition : partitions) {
-            OffsetAndMetadata metadata = consumer.committed(partition); // TODO: batch API?
-            stateMgr.putOffsetLimit(partition, metadata != null ? metadata.offset() : 0L);
+        if (oldState.isValidTransition(newState)) {
+            state = newState;
+        } else {
+            throw new IllegalStateException("Invalid transition from " + oldState + " to " + newState);
         }
     }
 
+    @Override
+    public void update(final Set<TopicPartition> topicPartitions, final Map<String, List<String>> allTopologyNodesToSourceTopics) {
+        this.inputPartitions = topicPartitions;
+        topology.updateSourceTopics(allTopologyNodesToSourceTopics);
+    }
+
+    void maybeInitTaskTimeoutOrThrow(final long currentWallClockMs,
+                                     final TimeoutException timeoutException,
+                                     final Logger log) throws StreamsException {
+        if (deadlineMs == NO_DEADLINE) {
+            deadlineMs = currentWallClockMs + taskTimeoutMs;
+        } else if (currentWallClockMs > deadlineMs) {
+            final String errorMessage = String.format(
+                "Task %s did not make progress within %d ms. Adjust `%s` if needed.",
+                id,
+                currentWallClockMs - deadlineMs + taskTimeoutMs,
+                StreamsConfig.TASK_TIMEOUT_MS_CONFIG
+            );
+
+            if (timeoutException != null) {
+                throw new TimeoutException(errorMessage, timeoutException);
+            } else {
+                throw new TimeoutException(errorMessage);
+            }
+        }
+
+        if (timeoutException != null) {
+            log.debug(
+                "Timeout exception. Remaining time to deadline {}; retrying.",
+                deadlineMs - currentWallClockMs,
+                timeoutException
+            );
+        } else {
+            log.debug(
+                "Task did not make progress. Remaining time to deadline {}; retrying.",
+                deadlineMs - currentWallClockMs
+            );
+        }
+
+    }
+
+    void clearTaskTimeout(final Logger log) {
+        if (deadlineMs != NO_DEADLINE) {
+            log.debug("Clearing task timeout.");
+            deadlineMs = NO_DEADLINE;
+        }
+    }
 }

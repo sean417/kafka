@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -18,33 +18,35 @@
 package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.streams.processor.ProcessorContext;
-import org.apache.kafka.streams.state.KeyValueStore;
+import org.apache.kafka.streams.state.TimestampedKeyValueStore;
+import org.apache.kafka.streams.state.ValueAndTimestamp;
 
 public class KTableSourceValueGetterSupplier<K, V> implements KTableValueGetterSupplier<K, V> {
+    private final String storeName;
 
-    private final String topic;
-
-    public KTableSourceValueGetterSupplier(String topic) {
-        this.topic = topic;
+    public KTableSourceValueGetterSupplier(final String storeName) {
+        this.storeName = storeName;
     }
 
     public KTableValueGetter<K, V> get() {
         return new KTableSourceValueGetter();
     }
 
-    private class KTableSourceValueGetter implements KTableValueGetter<K, V> {
-
-        KeyValueStore<K, V> store = null;
-
-        @SuppressWarnings("unchecked")
-        public void init(ProcessorContext context) {
-            store = (KeyValueStore<K, V>) context.getStateStore(topic);
-        }
-
-        public V get(K key) {
-            return store.get(key);
-        }
-
+    @Override
+    public String[] storeNames() {
+        return new String[]{storeName};
     }
 
+    private class KTableSourceValueGetter implements KTableValueGetter<K, V> {
+        private TimestampedKeyValueStore<K, V> store = null;
+
+        @SuppressWarnings("unchecked")
+        public void init(final ProcessorContext context) {
+            store = (TimestampedKeyValueStore<K, V>) context.getStateStore(storeName);
+        }
+
+        public ValueAndTimestamp<V> get(final K key) {
+            return store.get(key);
+        }
+    }
 }

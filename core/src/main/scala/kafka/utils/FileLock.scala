@@ -18,6 +18,7 @@
 
 import java.io._
 import java.nio.channels._
+import java.nio.file.StandardOpenOption
 
 /**
  * A file lock a la flock/funlock
@@ -25,16 +26,17 @@ import java.nio.channels._
  * The given path will be created and opened if it doesn't exist.
  */
 class FileLock(val file: File) extends Logging {
-  file.createNewFile() // create the file if it doesn't exist
-  private val channel = new RandomAccessFile(file, "rw").getChannel()
+
+  private val channel = FileChannel.open(file.toPath, StandardOpenOption.CREATE, StandardOpenOption.READ,
+    StandardOpenOption.WRITE)
   private var flock: java.nio.channels.FileLock = null
 
   /**
    * Lock the file or throw an exception if the lock is already held
    */
-  def lock() {
+  def lock(): Unit = {
     this synchronized {
-      trace("Acquiring lock on " + file.getAbsolutePath)
+      trace(s"Acquiring lock on ${file.getAbsolutePath}")
       flock = channel.lock()
     }
   }
@@ -44,7 +46,7 @@ class FileLock(val file: File) extends Logging {
    */
   def tryLock(): Boolean = {
     this synchronized {
-      trace("Acquiring lock on " + file.getAbsolutePath)
+      trace(s"Acquiring lock on ${file.getAbsolutePath}")
       try {
         // weirdly this method will return null if the lock is held by another
         // process, but will throw an exception if the lock is held by this process
@@ -52,7 +54,7 @@ class FileLock(val file: File) extends Logging {
         flock = channel.tryLock()
         flock != null
       } catch {
-        case e: OverlappingFileLockException => false
+        case _: OverlappingFileLockException => false
       }
     }
   }
@@ -60,9 +62,9 @@ class FileLock(val file: File) extends Logging {
   /**
    * Unlock the lock if it is held
    */
-  def unlock() {
+  def unlock(): Unit = {
     this synchronized {
-      trace("Releasing lock on " + file.getAbsolutePath)
+      trace(s"Releasing lock on ${file.getAbsolutePath}")
       if(flock != null)
         flock.release()
     }

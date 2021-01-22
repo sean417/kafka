@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -17,149 +17,408 @@
 package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ProtoUtils;
-import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.message.FetchResponseData;
+import org.apache.kafka.common.message.ResponseHeaderData;
+import org.apache.kafka.common.network.ByteBufferSend;
+import org.apache.kafka.common.network.Send;
+import org.apache.kafka.common.protocol.ByteBufferAccessor;
+import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.ObjectSerializationCache;
+import org.apache.kafka.common.protocol.RecordsReadable;
+import org.apache.kafka.common.protocol.RecordsWritable;
 import org.apache.kafka.common.protocol.types.Struct;
-import org.apache.kafka.common.utils.CollectionUtils;
+import org.apache.kafka.common.record.BaseRecords;
+import org.apache.kafka.common.record.MemoryRecords;
+import org.apache.kafka.common.record.MultiRecordsSend;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import static org.apache.kafka.common.requests.FetchMetadata.INVALID_SESSION_ID;
 
 /**
- * This wrapper supports both v0 and v1 of FetchResponse.
+ * This wrapper supports all versions of the Fetch API
+ *
+ * Possible error codes:
+ *
+ * - {@link Errors#OFFSET_OUT_OF_RANGE} If the fetch offset is out of range for a requested partition
+ * - {@link Errors#TOPIC_AUTHORIZATION_FAILED} If the user does not have READ access to a requested topic
+ * - {@link Errors#REPLICA_NOT_AVAILABLE} If the request is received by a broker with version < 2.6 which is not a replica
+ * - {@link Errors#NOT_LEADER_OR_FOLLOWER} If the broker is not a leader or follower and either the provided leader epoch
+ *     matches the known leader epoch on the broker or is empty
+ * - {@link Errors#FENCED_LEADER_EPOCH} If the epoch is lower than the broker's epoch
+ * - {@link Errors#UNKNOWN_LEADER_EPOCH} If the epoch is larger than the broker's epoch
+ * - {@link Errors#UNKNOWN_TOPIC_OR_PARTITION} If the broker does not have metadata for a topic or partition
+ * - {@link Errors#KAFKA_STORAGE_ERROR} If the log directory for one of the requested partitions is offline
+ * - {@link Errors#UNSUPPORTED_COMPRESSION_TYPE} If a fetched topic is using a compression type which is
+ *     not supported by the fetch request version
+ * - {@link Errors#CORRUPT_MESSAGE} If corrupt message encountered, e.g. when the broker scans the log to find
+ *     the fetch offset after the index lookup
+ * - {@link Errors#UNKNOWN_SERVER_ERROR} For any unexpected errors
  */
-public class FetchResponse extends AbstractRequestResponse {
-    
-    private static final Schema CURRENT_SCHEMA = ProtoUtils.currentResponseSchema(ApiKeys.FETCH.id);
-    private static final String RESPONSES_KEY_NAME = "responses";
-
-    // topic level field names
-    private static final String TOPIC_KEY_NAME = "topic";
-    private static final String PARTITIONS_KEY_NAME = "partition_responses";
-    private static final String THROTTLE_TIME_KEY_NAME = "throttle_time_ms";
-
-    // partition level field names
-    private static final String PARTITION_KEY_NAME = "partition";
-    private static final String ERROR_CODE_KEY_NAME = "error_code";
-
-    // Default throttle time
-    private static final int DEFAULT_THROTTLE_TIME = 0;
-
-  /**
-     * Possible error code:
-     *
-     *  OFFSET_OUT_OF_RANGE (1)
-     *  UNKNOWN_TOPIC_OR_PARTITION (3)
-     *  NOT_LEADER_FOR_PARTITION (6)
-     *  REPLICA_NOT_AVAILABLE (9)
-     *  UNKNOWN (-1)
-     */
-
-    private static final String HIGH_WATERMARK_KEY_NAME = "high_watermark";
-    private static final String RECORD_SET_KEY_NAME = "record_set";
+public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
 
     public static final long INVALID_HIGHWATERMARK = -1L;
-    public static final ByteBuffer EMPTY_RECORD_SET = ByteBuffer.allocate(0);
+    public static final long INVALID_LAST_STABLE_OFFSET = -1L;
+    public static final long INVALID_LOG_START_OFFSET = -1L;
+    public static final int INVALID_PREFERRED_REPLICA_ID = -1;
 
-    private final Map<TopicPartition, PartitionData> responseData;
-    private final int throttleTime;
+    private final FetchResponseData data;
+    private final LinkedHashMap<TopicPartition, PartitionData<T>> responseDataMap;
 
-    public static final class PartitionData {
-        public final short errorCode;
-        public final long highWatermark;
-        public final ByteBuffer recordSet;
+    public FetchResponseData data() {
+        return data;
+    }
 
-        public PartitionData(short errorCode, long highWatermark, ByteBuffer recordSet) {
-            this.errorCode = errorCode;
-            this.highWatermark = highWatermark;
-            this.recordSet = recordSet;
+    public static final class AbortedTransaction {
+        public final long producerId;
+        public final long firstOffset;
+
+        public AbortedTransaction(long producerId, long firstOffset) {
+            this.producerId = producerId;
+            this.firstOffset = firstOffset;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o)
+                return true;
+            if (o == null || getClass() != o.getClass())
+                return false;
+
+            AbortedTransaction that = (AbortedTransaction) o;
+
+            return producerId == that.producerId && firstOffset == that.firstOffset;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = Long.hashCode(producerId);
+            result = 31 * result + Long.hashCode(firstOffset);
+            return result;
+        }
+
+        @Override
+        public String toString() {
+            return "(producerId=" + producerId + ", firstOffset=" + firstOffset + ")";
+        }
+
+        static AbortedTransaction fromMessage(FetchResponseData.AbortedTransaction abortedTransaction) {
+            return new AbortedTransaction(abortedTransaction.producerId(), abortedTransaction.firstOffset());
+        }
+    }
+
+    public static final class PartitionData<T extends BaseRecords> {
+        private final FetchResponseData.FetchablePartitionResponse partitionResponse;
+
+        // Derived fields
+        private final Optional<Integer> preferredReplica;
+        private final List<AbortedTransaction> abortedTransactions;
+        private final Errors error;
+
+        private PartitionData(FetchResponseData.FetchablePartitionResponse partitionResponse) {
+            // We partially construct FetchablePartitionResponse since we don't know the partition ID at this point
+            // When we convert the PartitionData (and other fields) into FetchResponseData down in toMessage, we
+            // set the partition IDs.
+            this.partitionResponse = partitionResponse;
+            this.preferredReplica = Optional.of(partitionResponse.preferredReadReplica())
+                .filter(replicaId -> replicaId != INVALID_PREFERRED_REPLICA_ID);
+
+            if (partitionResponse.abortedTransactions() == null) {
+                this.abortedTransactions = null;
+            } else {
+                this.abortedTransactions = partitionResponse.abortedTransactions().stream()
+                    .map(AbortedTransaction::fromMessage)
+                    .collect(Collectors.toList());
+            }
+
+            this.error = Errors.forCode(partitionResponse.errorCode());
+        }
+
+        public PartitionData(Errors error,
+                             long highWatermark,
+                             long lastStableOffset,
+                             long logStartOffset,
+                             Optional<Integer> preferredReadReplica,
+                             List<AbortedTransaction> abortedTransactions,
+                             Optional<FetchResponseData.EpochEndOffset> divergingEpoch,
+                             T records) {
+            this.preferredReplica = preferredReadReplica;
+            this.abortedTransactions = abortedTransactions;
+            this.error = error;
+
+            FetchResponseData.FetchablePartitionResponse partitionResponse =
+                new FetchResponseData.FetchablePartitionResponse();
+            partitionResponse.setErrorCode(error.code())
+                .setHighWatermark(highWatermark)
+                .setLastStableOffset(lastStableOffset)
+                .setLogStartOffset(logStartOffset);
+            if (abortedTransactions != null) {
+                partitionResponse.setAbortedTransactions(abortedTransactions.stream().map(
+                    aborted -> new FetchResponseData.AbortedTransaction()
+                        .setProducerId(aborted.producerId)
+                        .setFirstOffset(aborted.firstOffset))
+                    .collect(Collectors.toList()));
+            } else {
+                partitionResponse.setAbortedTransactions(null);
+            }
+            partitionResponse.setPreferredReadReplica(preferredReadReplica.orElse(INVALID_PREFERRED_REPLICA_ID));
+            partitionResponse.setRecordSet(records);
+            divergingEpoch.ifPresent(partitionResponse::setDivergingEpoch);
+
+            this.partitionResponse = partitionResponse;
+        }
+
+        public PartitionData(Errors error,
+                             long highWatermark,
+                             long lastStableOffset,
+                             long logStartOffset,
+                             Optional<Integer> preferredReadReplica,
+                             List<AbortedTransaction> abortedTransactions,
+                             T records) {
+            this(error, highWatermark, lastStableOffset, logStartOffset, preferredReadReplica,
+                abortedTransactions, Optional.empty(), records);
+        }
+
+        public PartitionData(Errors error,
+                             long highWatermark,
+                             long lastStableOffset,
+                             long logStartOffset,
+                             List<AbortedTransaction> abortedTransactions,
+                             T records) {
+            this(error, highWatermark, lastStableOffset, logStartOffset, Optional.empty(), abortedTransactions, records);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o)
+                return true;
+            if (o == null || getClass() != o.getClass())
+                return false;
+
+            PartitionData that = (PartitionData) o;
+
+            return this.partitionResponse.equals(that.partitionResponse);
+        }
+
+        @Override
+        public int hashCode() {
+            return this.partitionResponse.hashCode();
+        }
+
+        @Override
+        public String toString() {
+            return "(error=" + error() +
+                    ", highWaterMark=" + highWatermark() +
+                    ", lastStableOffset = " + lastStableOffset() +
+                    ", logStartOffset = " + logStartOffset() +
+                    ", preferredReadReplica = " + preferredReadReplica().map(Object::toString).orElse("absent") +
+                    ", abortedTransactions = " + abortedTransactions() +
+                    ", divergingEpoch =" + divergingEpoch() +
+                    ", recordsSizeInBytes=" + records().sizeInBytes() + ")";
+        }
+
+        public Errors error() {
+            return error;
+        }
+
+        public long highWatermark() {
+            return partitionResponse.highWatermark();
+        }
+
+        public long lastStableOffset() {
+            return partitionResponse.lastStableOffset();
+        }
+
+        public long logStartOffset() {
+            return partitionResponse.logStartOffset();
+        }
+
+        public Optional<Integer> preferredReadReplica() {
+            return preferredReplica;
+        }
+
+        public List<AbortedTransaction> abortedTransactions() {
+            return abortedTransactions;
+        }
+
+        public Optional<FetchResponseData.EpochEndOffset> divergingEpoch() {
+            FetchResponseData.EpochEndOffset epochEndOffset = partitionResponse.divergingEpoch();
+            if (epochEndOffset.epoch() < 0) {
+                return Optional.empty();
+            } else {
+                return Optional.of(epochEndOffset);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        public T records() {
+            return (T) partitionResponse.recordSet();
         }
     }
 
     /**
-     * Constructor for Version 0
-     * @param responseData fetched data grouped by topic-partition
+     * From version 3 or later, the entries in `responseData` should be in the same order as the entries in
+     * `FetchRequest.fetchData`.
+     *
+     * @param error             The top-level error code.
+     * @param responseData      The fetched data grouped by partition.
+     * @param throttleTimeMs    The time in milliseconds that the response was throttled
+     * @param sessionId         The fetch session id.
      */
-    public FetchResponse(Map<TopicPartition, PartitionData> responseData) {
-        super(new Struct(ProtoUtils.responseSchema(ApiKeys.FETCH.id, 0)));
-        initCommonFields(responseData);
-        this.responseData = responseData;
-        this.throttleTime = DEFAULT_THROTTLE_TIME;
+    public FetchResponse(Errors error,
+                         LinkedHashMap<TopicPartition, PartitionData<T>> responseData,
+                         int throttleTimeMs,
+                         int sessionId) {
+        this.data = toMessage(throttleTimeMs, error, responseData.entrySet().iterator(), sessionId);
+        this.responseDataMap = responseData;
     }
 
-  /**
-   * Constructor for Version 1
-   * @param responseData fetched data grouped by topic-partition
-   * @param throttleTime Time in milliseconds the response was throttled
-   */
-    public FetchResponse(Map<TopicPartition, PartitionData> responseData, int throttleTime) {
-        super(new Struct(CURRENT_SCHEMA));
-        initCommonFields(responseData);
-        struct.set(THROTTLE_TIME_KEY_NAME, throttleTime);
-        this.responseData = responseData;
-        this.throttleTime = throttleTime;
+    public FetchResponse(FetchResponseData fetchResponseData) {
+        this.data = fetchResponseData;
+        this.responseDataMap = toResponseDataMap(fetchResponseData);
     }
 
-    public FetchResponse(Struct struct) {
-        super(struct);
-        responseData = new HashMap<TopicPartition, PartitionData>();
-        for (Object topicResponseObj : struct.getArray(RESPONSES_KEY_NAME)) {
-            Struct topicResponse = (Struct) topicResponseObj;
-            String topic = topicResponse.getString(TOPIC_KEY_NAME);
-            for (Object partitionResponseObj : topicResponse.getArray(PARTITIONS_KEY_NAME)) {
-                Struct partitionResponse = (Struct) partitionResponseObj;
-                int partition = partitionResponse.getInt(PARTITION_KEY_NAME);
-                short errorCode = partitionResponse.getShort(ERROR_CODE_KEY_NAME);
-                long highWatermark = partitionResponse.getLong(HIGH_WATERMARK_KEY_NAME);
-                ByteBuffer recordSet = partitionResponse.getBytes(RECORD_SET_KEY_NAME);
-                PartitionData partitionData = new PartitionData(errorCode, highWatermark, recordSet);
-                responseData.put(new TopicPartition(topic, partition), partitionData);
-            }
-        }
-        this.throttleTime = struct.hasField(THROTTLE_TIME_KEY_NAME) ? struct.getInt(THROTTLE_TIME_KEY_NAME) : DEFAULT_THROTTLE_TIME;
+    @Override
+    public Struct toStruct(short version) {
+        return data.toStruct(version);
     }
 
-    private void initCommonFields(Map<TopicPartition, PartitionData> responseData) {
-        Map<String, Map<Integer, PartitionData>> topicsData = CollectionUtils.groupDataByTopic(responseData);
+    @Override
+    public Send toSend(String dest, ResponseHeader responseHeader, short apiVersion) {
+        // Generate the Sends for the response fields and records
+        ArrayDeque<Send> sends = new ArrayDeque<>();
+        ObjectSerializationCache cache = new ObjectSerializationCache();
+        int totalRecordSize = data.responses().stream()
+                .flatMap(fetchableTopicResponse -> fetchableTopicResponse.partitionResponses().stream())
+                .mapToInt(fetchablePartitionResponse -> fetchablePartitionResponse.recordSet().sizeInBytes())
+                .sum();
+        int totalMessageSize = data.size(cache, apiVersion);
 
-        List<Struct> topicArray = new ArrayList<Struct>();
-        for (Map.Entry<String, Map<Integer, PartitionData>> topicEntry: topicsData.entrySet()) {
-            Struct topicData = struct.instance(RESPONSES_KEY_NAME);
-            topicData.set(TOPIC_KEY_NAME, topicEntry.getKey());
-            List<Struct> partitionArray = new ArrayList<Struct>();
-            for (Map.Entry<Integer, PartitionData> partitionEntry : topicEntry.getValue().entrySet()) {
-                PartitionData fetchPartitionData = partitionEntry.getValue();
-                Struct partitionData = topicData.instance(PARTITIONS_KEY_NAME);
-                partitionData.set(PARTITION_KEY_NAME, partitionEntry.getKey());
-                partitionData.set(ERROR_CODE_KEY_NAME, fetchPartitionData.errorCode);
-                partitionData.set(HIGH_WATERMARK_KEY_NAME, fetchPartitionData.highWatermark);
-                partitionData.set(RECORD_SET_KEY_NAME, fetchPartitionData.recordSet);
-                partitionArray.add(partitionData);
-            }
-            topicData.set(PARTITIONS_KEY_NAME, partitionArray.toArray());
-            topicArray.add(topicData);
-        }
-        struct.set(RESPONSES_KEY_NAME, topicArray.toArray());
+        RecordsWritable writer = new RecordsWritable(dest, totalMessageSize - totalRecordSize, sends::add);
+        data.write(writer, cache, apiVersion);
+        writer.flush();
+
+        // Compute the total size of all the Sends and write it out along with the header in the first Send
+        ResponseHeaderData responseHeaderData = responseHeader.data();
+
+        int headerSize = responseHeaderData.size(cache, responseHeader.headerVersion());
+        int bodySize = Math.toIntExact(sends.stream().mapToLong(Send::size).sum());
+
+        ByteBuffer buffer = ByteBuffer.allocate(headerSize + 4);
+        ByteBufferAccessor headerWriter = new ByteBufferAccessor(buffer);
+
+        // Write out the size and header
+        buffer.putInt(headerSize + bodySize);
+        responseHeaderData.write(headerWriter, cache, responseHeader.headerVersion());
+
+        // Rewind the buffer and set this the first Send in the MultiRecordsSend
+        buffer.rewind();
+        sends.addFirst(new ByteBufferSend(dest, buffer));
+
+        return new MultiRecordsSend(dest, sends);
     }
 
-
-    public Map<TopicPartition, PartitionData> responseData() {
-        return responseData;
+    public Errors error() {
+        return Errors.forCode(data.errorCode());
     }
 
-    public int getThrottleTime() {
-        return this.throttleTime;
+    public LinkedHashMap<TopicPartition, PartitionData<T>> responseData() {
+        return responseDataMap;
     }
 
-    public static FetchResponse parse(ByteBuffer buffer) {
-        return new FetchResponse(CURRENT_SCHEMA.read(buffer));
+    @Override
+    public int throttleTimeMs() {
+        return data.throttleTimeMs();
     }
 
-    public static FetchResponse parse(ByteBuffer buffer, int version) {
-        return new FetchResponse(ProtoUtils.responseSchema(ApiKeys.FETCH.id, version).read(buffer));
+    public int sessionId() {
+        return data.sessionId();
+    }
+
+    @Override
+    public Map<Errors, Integer> errorCounts() {
+        Map<Errors, Integer> errorCounts = new HashMap<>();
+        responseDataMap.values().forEach(response ->
+            updateErrorCounts(errorCounts, response.error())
+        );
+        return errorCounts;
+    }
+
+    public static FetchResponse<MemoryRecords> parse(ByteBuffer buffer, short version) {
+        FetchResponseData fetchResponseData = new FetchResponseData();
+        RecordsReadable reader = new RecordsReadable(buffer);
+        fetchResponseData.read(reader, version);
+        return new FetchResponse<>(fetchResponseData);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends BaseRecords> LinkedHashMap<TopicPartition, PartitionData<T>> toResponseDataMap(
+            FetchResponseData message) {
+        LinkedHashMap<TopicPartition, PartitionData<T>> responseMap = new LinkedHashMap<>();
+        message.responses().forEach(topicResponse -> {
+            topicResponse.partitionResponses().forEach(partitionResponse -> {
+                TopicPartition tp = new TopicPartition(topicResponse.topic(), partitionResponse.partition());
+                PartitionData<T> partitionData = new PartitionData<>(partitionResponse);
+                responseMap.put(tp, partitionData);
+            });
+        });
+        return responseMap;
+    }
+
+    private static <T extends BaseRecords> FetchResponseData toMessage(int throttleTimeMs, Errors error,
+                                                                       Iterator<Map.Entry<TopicPartition, PartitionData<T>>> partIterator,
+                                                                       int sessionId) {
+        FetchResponseData message = new FetchResponseData();
+        message.setThrottleTimeMs(throttleTimeMs);
+        message.setErrorCode(error.code());
+        message.setSessionId(sessionId);
+
+        List<FetchResponseData.FetchableTopicResponse> topicResponseList = new ArrayList<>();
+        List<FetchRequest.TopicAndPartitionData<PartitionData<T>>> topicsData =
+                FetchRequest.TopicAndPartitionData.batchByTopic(partIterator);
+        topicsData.forEach(partitionDataTopicAndPartitionData -> {
+            List<FetchResponseData.FetchablePartitionResponse> partitionResponses = new ArrayList<>();
+            partitionDataTopicAndPartitionData.partitions.forEach((partitionId, partitionData) -> {
+                // Since PartitionData alone doesn't know the partition ID, we set it here
+                partitionData.partitionResponse.setPartition(partitionId);
+                partitionResponses.add(partitionData.partitionResponse);
+            });
+            topicResponseList.add(new FetchResponseData.FetchableTopicResponse()
+                .setTopic(partitionDataTopicAndPartitionData.topic)
+                .setPartitionResponses(partitionResponses));
+        });
+
+        message.setResponses(topicResponseList);
+        return message;
+    }
+
+    /**
+     * Convenience method to find the size of a response.
+     *
+     * @param version       The version of the response to use.
+     * @param partIterator  The partition iterator.
+     * @return              The response size in bytes.
+     */
+    public static <T extends BaseRecords> int sizeOf(short version,
+                                                     Iterator<Map.Entry<TopicPartition, PartitionData<T>>> partIterator) {
+        // Since the throttleTimeMs and metadata field sizes are constant and fixed, we can
+        // use arbitrary values here without affecting the result.
+        FetchResponseData data = toMessage(0, Errors.NONE, partIterator, INVALID_SESSION_ID);
+        ObjectSerializationCache cache = new ObjectSerializationCache();
+        return 4 + data.size(cache, version);
+    }
+
+    @Override
+    public boolean shouldClientThrottle(short version) {
+        return version >= 8;
     }
 }

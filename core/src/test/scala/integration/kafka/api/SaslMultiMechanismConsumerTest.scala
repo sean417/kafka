@@ -13,39 +13,44 @@
 package kafka.api
 
 import java.io.File
-import org.apache.kafka.common.protocol.SecurityProtocol
-import kafka.server.KafkaConfig
-import org.junit.Test
-import kafka.utils.TestUtils
-import scala.collection.JavaConverters._
 
-class SaslMultiMechanismConsumerTest extends BaseConsumerTest with SaslTestHarness {
-  override protected val zkSaslEnabled = true
-  override protected val kafkaClientSaslMechanism = "PLAIN"
-  override protected val kafkaServerSaslMechanisms = List("GSSAPI", "PLAIN")
-  override protected def allKafkaClientSaslMechanisms = List("PLAIN", "GSSAPI")
+import kafka.server.KafkaConfig
+import org.junit.{After, Before, Test}
+import kafka.utils.JaasTestUtils
+import org.apache.kafka.common.security.auth.SecurityProtocol
+
+import scala.jdk.CollectionConverters._
+
+class SaslMultiMechanismConsumerTest extends BaseConsumerTest with SaslSetup {
+  private val kafkaClientSaslMechanism = "PLAIN"
+  private val kafkaServerSaslMechanisms = List("GSSAPI", "PLAIN")
   this.serverConfig.setProperty(KafkaConfig.ZkEnableSecureAclsProp, "true")
   override protected def securityProtocol = SecurityProtocol.SASL_SSL
   override protected lazy val trustStoreFile = Some(File.createTempFile("truststore", ".jks"))
-  override protected val saslProperties = Some(kafkaSaslProperties(kafkaClientSaslMechanism, Some(kafkaServerSaslMechanisms)))
+  override protected val serverSaslProperties = Some(kafkaServerSaslProperties(kafkaServerSaslMechanisms, kafkaClientSaslMechanism))
+  override protected val clientSaslProperties = Some(kafkaClientSaslProperties(kafkaClientSaslMechanism))
+
+  @Before
+  override def setUp(): Unit = {
+    startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), Both,
+      JaasTestUtils.KafkaServerContextName))
+    super.setUp()
+  }
+
+  @After
+  override def tearDown(): Unit = {
+    super.tearDown()
+    closeSasl()
+  }
 
   @Test
-  def testMultipleBrokerMechanisms() {
+  def testMultipleBrokerMechanisms(): Unit = {
+    val plainSaslProducer = createProducer()
+    val plainSaslConsumer = createConsumer()
 
-    val plainSaslProducer = producers(0)
-    val plainSaslConsumer = consumers(0)
-
-    val gssapiSaslProperties = kafkaSaslProperties("GSSAPI")
-    val gssapiSaslProducer = TestUtils.createNewProducer(brokerList,
-                                                         securityProtocol = this.securityProtocol,
-                                                         trustStoreFile = this.trustStoreFile,
-                                                         saslProperties = Some(gssapiSaslProperties))
-    producers += gssapiSaslProducer
-    val gssapiSaslConsumer = TestUtils.createNewConsumer(brokerList,
-                                                         securityProtocol = this.securityProtocol,
-                                                         trustStoreFile = this.trustStoreFile,
-                                                         saslProperties = Some(gssapiSaslProperties))
-    consumers += gssapiSaslConsumer
+    val gssapiSaslProperties = kafkaClientSaslProperties("GSSAPI", dynamicJaasConfig = true)
+    val gssapiSaslProducer = createProducer(configOverrides = gssapiSaslProperties)
+    val gssapiSaslConsumer = createConsumer(configOverrides = gssapiSaslProperties)
     val numRecords = 1000
     var startingOffset = 0
 
@@ -54,9 +59,7 @@ class SaslMultiMechanismConsumerTest extends BaseConsumerTest with SaslTestHarne
     plainSaslConsumer.assign(List(tp).asJava)
     plainSaslConsumer.seek(tp, 0)
     consumeAndVerifyRecords(consumer = plainSaslConsumer, numRecords = numRecords, startingOffset = startingOffset)
-    val plainCommitCallback = new CountConsumerCommitCallback()
-    plainSaslConsumer.commitAsync(plainCommitCallback)
-    awaitCommitCallback(plainSaslConsumer, plainCommitCallback)
+    sendAndAwaitAsyncCommit(plainSaslConsumer)
     startingOffset += numRecords
 
     // Test SASL/GSSAPI producer and consumer
@@ -64,9 +67,7 @@ class SaslMultiMechanismConsumerTest extends BaseConsumerTest with SaslTestHarne
     gssapiSaslConsumer.assign(List(tp).asJava)
     gssapiSaslConsumer.seek(tp, startingOffset)
     consumeAndVerifyRecords(consumer = gssapiSaslConsumer, numRecords = numRecords, startingOffset = startingOffset)
-    val gssapiCommitCallback = new CountConsumerCommitCallback()
-    gssapiSaslConsumer.commitAsync(gssapiCommitCallback)
-    awaitCommitCallback(gssapiSaslConsumer, gssapiCommitCallback)
+    sendAndAwaitAsyncCommit(gssapiSaslConsumer)
     startingOffset += numRecords
 
     // Test SASL/PLAIN producer and SASL/GSSAPI consumer
@@ -81,6 +82,6 @@ class SaslMultiMechanismConsumerTest extends BaseConsumerTest with SaslTestHarne
     plainSaslConsumer.assign(List(tp).asJava)
     plainSaslConsumer.seek(tp, startingOffset)
     consumeAndVerifyRecords(consumer = plainSaslConsumer, numRecords = numRecords, startingOffset = startingOffset)
-
   }
+
 }

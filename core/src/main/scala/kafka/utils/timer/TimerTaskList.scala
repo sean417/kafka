@@ -16,10 +16,11 @@
  */
 package kafka.utils.timer
 
-import java.util.concurrent.{TimeUnit, Delayed}
-import java.util.concurrent.atomic.{AtomicLong, AtomicInteger}
+import java.util.concurrent.{Delayed, TimeUnit}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
-import kafka.utils.{SystemTime, threadsafe}
+import kafka.utils.threadsafe
+import org.apache.kafka.common.utils.Time
 
 import scala.math._
 
@@ -42,9 +43,7 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
   }
 
   // Get the bucket's expiration time
-  def getExpiration(): Long = {
-    expiration.get()
-  }
+  def getExpiration: Long = expiration.get
 
   // Apply the supplied function to each of tasks in this list
   def foreach(f: (TimerTask)=>Unit): Unit = {
@@ -117,16 +116,12 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
   }
 
   def getDelay(unit: TimeUnit): Long = {
-    unit.convert(max(getExpiration - SystemTime.milliseconds, 0), TimeUnit.MILLISECONDS)
+    unit.convert(max(getExpiration - Time.SYSTEM.hiResClockMs, 0), TimeUnit.MILLISECONDS)
   }
 
   def compareTo(d: Delayed): Int = {
-
     val other = d.asInstanceOf[TimerTaskList]
-
-    if(getExpiration < other.getExpiration) -1
-    else if(getExpiration > other.getExpiration) 1
-    else 0
+    java.lang.Long.compare(getExpiration, other.getExpiration)
   }
 
 }
@@ -158,7 +153,7 @@ private[timer] class TimerTaskEntry(val timerTask: TimerTask, val expirationMs: 
   }
 
   override def compare(that: TimerTaskEntry): Int = {
-    this.expirationMs compare that.expirationMs
+    java.lang.Long.compare(expirationMs, that.expirationMs)
   }
 }
 

@@ -18,14 +18,15 @@
 package kafka.log
 
 import java.nio._
+
+import kafka.utils.Exit
 import org.junit._
-import org.scalatest.junit.JUnitSuite
 import org.junit.Assert._
 
-class OffsetMapTest extends JUnitSuite {
+class OffsetMapTest {
   
   @Test
-  def testBasicValidation() {
+  def testBasicValidation(): Unit = {
     validateMap(10)
     validateMap(100)
     validateMap(1000)
@@ -33,7 +34,7 @@ class OffsetMapTest extends JUnitSuite {
   }
   
   @Test
-  def testClear() {
+  def testClear(): Unit = {
     val map = new SkimpyOffsetMap(4000)
     for(i <- 0 until 10)
       map.put(key(i), i)
@@ -44,13 +45,24 @@ class OffsetMapTest extends JUnitSuite {
       assertEquals(map.get(key(i)), -1L)
   }
   
-  def key(key: Int) = ByteBuffer.wrap(key.toString.getBytes)
+  @Test
+  def testGetWhenFull(): Unit = {
+    val map = new SkimpyOffsetMap(4096)
+    var i = 37L  //any value would do
+    while (map.size < map.slots) {
+      map.put(key(i), i)
+      i = i + 1L
+    }
+    assertEquals(map.get(key(i)), -1L)
+    assertEquals(map.get(key(i-1L)), i-1L)
+  }
+
+  def key(key: Long) = ByteBuffer.wrap(key.toString.getBytes)
   
   def validateMap(items: Int, loadFactor: Double = 0.5): SkimpyOffsetMap = {
     val map = new SkimpyOffsetMap((items/loadFactor * 24).toInt)
     for(i <- 0 until items)
       map.put(key(i), i)
-    var misses = 0
     for(i <- 0 until items)
       assertEquals(map.get(key(i)), i.toLong)
     map
@@ -59,10 +71,10 @@ class OffsetMapTest extends JUnitSuite {
 }
 
 object OffsetMapTest {
-  def main(args: Array[String]) {
+  def main(args: Array[String]): Unit = {
     if(args.length != 2) {
       System.err.println("USAGE: java OffsetMapTest size load")
-      System.exit(1)
+      Exit.exit(1)
     }
     val test = new OffsetMapTest()
     val size = args(0).toInt
@@ -70,7 +82,7 @@ object OffsetMapTest {
     val start = System.nanoTime
     val map = test.validateMap(size, load)
     val ellapsedMs = (System.nanoTime - start) / 1000.0 / 1000.0
-    println(map.size + " entries in map of size " + map.slots + " in " + ellapsedMs + " ms")
+    println(s"${map.size} entries in map of size ${map.slots} in $ellapsedMs ms")
     println("Collision rate: %.1f%%".format(100*map.collisionRate))
   }
 }

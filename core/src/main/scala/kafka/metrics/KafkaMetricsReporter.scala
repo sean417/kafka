@@ -23,6 +23,9 @@ package kafka.metrics
 import kafka.utils.{CoreUtils, VerifiableProperties}
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.collection.Seq
+import scala.collection.mutable.ArrayBuffer
+
 
 /**
  * Base trait for reporter MBeans. If a client wants to expose these JMX
@@ -32,9 +35,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * registered MBean is compliant with the standard MBean convention.
  */
 trait KafkaMetricsReporterMBean {
-  def startReporter(pollingPeriodInSeconds: Long)
-  def stopReporter()
-
+  def startReporter(pollingPeriodInSeconds: Long): Unit
+  def stopReporter(): Unit
   /**
    *
    * @return The name with which the MBean will be registered.
@@ -42,29 +44,37 @@ trait KafkaMetricsReporterMBean {
   def getMBeanName: String
 }
 
-
+/**
+  * Implement {@link org.apache.kafka.common.ClusterResourceListener} to receive cluster metadata once it's available. Please see the class documentation for ClusterResourceListener for more information.
+  */
 trait KafkaMetricsReporter {
-  def init(props: VerifiableProperties)
+  def init(props: VerifiableProperties): Unit
 }
 
 object KafkaMetricsReporter {
   val ReporterStarted: AtomicBoolean = new AtomicBoolean(false)
+  private var reporters: ArrayBuffer[KafkaMetricsReporter] = null
 
-  def startReporters (verifiableProps: VerifiableProperties) {
+  def startReporters (verifiableProps: VerifiableProperties): Seq[KafkaMetricsReporter] = {
     ReporterStarted synchronized {
       if (!ReporterStarted.get()) {
+        reporters = ArrayBuffer[KafkaMetricsReporter]()
         val metricsConfig = new KafkaMetricsConfig(verifiableProps)
-        if(metricsConfig.reporters.size > 0) {
+        if(metricsConfig.reporters.nonEmpty) {
           metricsConfig.reporters.foreach(reporterType => {
             val reporter = CoreUtils.createObject[KafkaMetricsReporter](reporterType)
             reporter.init(verifiableProps)
-            if (reporter.isInstanceOf[KafkaMetricsReporterMBean])
-              CoreUtils.registerMBean(reporter, reporter.asInstanceOf[KafkaMetricsReporterMBean].getMBeanName)
+            reporters += reporter
+            reporter match {
+              case bean: KafkaMetricsReporterMBean => CoreUtils.registerMBean(reporter, bean.getMBeanName)
+              case _ =>
+            }
           })
           ReporterStarted.set(true)
         }
       }
     }
+    reporters
   }
 }
 

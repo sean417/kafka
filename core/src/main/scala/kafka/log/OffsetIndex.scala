@@ -17,182 +17,109 @@
 
 package kafka.log
 
-import org.apache.kafka.common.utils.Utils
+import java.io.File
+import java.nio.ByteBuffer
 
-import scala.math._
-import java.io._
-import java.nio._
-import java.nio.channels._
-import java.util.concurrent.locks._
-import kafka.utils._
 import kafka.utils.CoreUtils.inLock
-import kafka.common.InvalidOffsetException
+import kafka.utils.Logging
+import org.apache.kafka.common.errors.InvalidOffsetException
 
 /**
  * An index that maps offsets to physical file locations for a particular log segment. This index may be sparse:
  * that is it may not hold an entry for all messages in the log.
- * 
+ *
  * The index is stored in a file that is pre-allocated to hold a fixed maximum number of 8-byte entries.
- * 
+ *
  * The index supports lookups against a memory-map of this file. These lookups are done using a simple binary search variant
  * to locate the offset/location pair for the greatest offset less than or equal to the target offset.
- * 
+ *
  * Index files can be opened in two ways: either as an empty, mutable index that allows appends or
- * an immutable read-only index file that has previously been populated. The makeReadOnly method will turn a mutable file into an 
+ * an immutable read-only index file that has previously been populated. The makeReadOnly method will turn a mutable file into an
  * immutable one and truncate off any extra bytes. This is done when the index file is rolled over.
- * 
+ *
  * No attempt is made to checksum the contents of this file, in the event of a crash it is rebuilt.
- * 
- * The file format is a series of entries. The physical format is a 4 byte "relative" offset and a 4 byte file location for the 
+ *
+ * The file format is a series of entries. The physical format is a 4 byte "relative" offset and a 4 byte file location for the
  * message with that offset. The offset stored is relative to the base offset of the index file. So, for example,
  * if the base offset was 50, then the offset 55 would be stored as 5. Using relative offsets in this way let's us use
  * only 4 bytes for the offset.
- * 
+ *
  * The frequency of entries is up to the user of this class.
- * 
- * All external APIs translate from relative offsets to full offsets, so users of this class do not interact with the internal 
+ *
+ * All external APIs translate from relative offsets to full offsets, so users of this class do not interact with the internal
  * storage format.
  */
-class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long, val maxIndexSize: Int = -1) extends Logging {
-  
-  private val lock = new ReentrantLock
-  
-  /* initialize the memory mapping for this index */
-  @volatile
-  private[this] var mmap: MappedByteBuffer = {
-    //如果索引文件不存在，则创建新文件并返回true，反之返回false。
-    val newlyCreated = _file.createNewFile()
-    val raf = new RandomAccessFile(_file, "rw")
-    try {
-      /* pre-allocate the file if necessary */
-      if (newlyCreated) {//对于新创建的的索引文件，进行扩容
-        if (maxIndexSize < 8)
-          throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
-        //根据maxIndexSize的值对索引文件进行扩容，扩容结果是小于maxIndexSize的最大的8的倍数
-        raf.setLength(roundToExactMultiple(maxIndexSize, 8))
-      }
+// Avoid shadowing mutable `file` in AbstractIndex
+class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable: Boolean = true)
+    extends AbstractIndex(_file, baseOffset, maxIndexSize, writable) {
+  import OffsetIndex._
 
-      /* memory-map the file 进行内存映射 */
-      val len = raf.length()
-      val idx = raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, len)
+  override def entrySize = 8
 
-      /* set the position in the index for the next entry
-      * 将新创建的索引文件的positon设置为0，从头开始写文件。
-      * */
-      if (newlyCreated)
-        idx.position(0)
-      else
-        // if this is a pre-existing index, assume it is all valid and set position to last entry
-        //  对于原来就存在的索引文件，则将position移动到所有索引项的结束位置，防止数据覆盖
-        idx.position(roundToExactMultiple(idx.limit, 8))
-      idx    //    返回MappedByteBuffer
-    } finally {
-      CoreUtils.swallow(raf.close())
-    }
-  }
+  /* the last offset in the index */
+  private[this] var _lastOffset = lastEntry.offset
 
-  /* the number of eight-byte entries currently in the index 索引项个数 */
-  @volatile
-  private[this] var _entries = mmap.position / 8
-
-  /* The maximum number of eight-byte entries this index can hold 最大索引项个数 */
-  @volatile
-  private[this] var _maxEntries = mmap.limit / 8
-
-  //读取最后一个索引项的 offset
-  @volatile
-  private[this] var _lastOffset = readLastEntry.offset
-  
-  debug("Loaded index file %s with maxEntries = %d, maxIndexSize = %d, entries = %d, lastOffset = %d, file position = %d"
-    .format(_file.getAbsolutePath, _maxEntries, maxIndexSize, _entries, _lastOffset, mmap.position))
-
-  /** The maximum number of entries this index can hold */
-  def maxEntries: Int = _maxEntries
-
-  /** The last offset in the index */
-  def lastOffset: Long = _lastOffset
-
-  /** The index file */
-  def file: File = _file
+  debug(s"Loaded index file ${file.getAbsolutePath} with maxEntries = $maxEntries, " +
+    s"maxIndexSize = $maxIndexSize, entries = ${_entries}, lastOffset = ${_lastOffset}, file position = ${mmap.position()}")
 
   /**
    * The last entry in the index
    */
-  def readLastEntry(): OffsetPosition = {
+  private def lastEntry: OffsetPosition = {
     inLock(lock) {
       _entries match {
         case 0 => OffsetPosition(baseOffset, 0)
-        case s => OffsetPosition(baseOffset + relativeOffset(mmap, s - 1), physical(mmap, s - 1))
+        case s => parseEntry(mmap, s - 1)
       }
     }
   }
 
+  def lastOffset: Long = _lastOffset
+
   /**
-   * Find the largest offset less than or equal to the given targetOffset 
+   * Find the largest offset less than or equal to the given targetOffset
    * and return a pair holding this offset and its corresponding physical file position.
-   * 
+   *
    * @param targetOffset The offset to look up.
-   * 
-   * @return The offset found and the corresponding file position for this offset. 
-   * If the target offset is smaller than the least entry in the index (or the index is empty),
-   * the pair (baseOffset, 0) is returned.
+   * @return The offset found and the corresponding file position for this offset
+   *         If the target offset is smaller than the least entry in the index (or the index is empty),
+   *         the pair (baseOffset, 0) is returned.
    */
   def lookup(targetOffset: Long): OffsetPosition = {
-    maybeLock(lock) {//window操作要加锁，其他操作不加做
-      val idx = mmap.duplicate//创建一个副本
-      val slot = indexSlotFor(idx, targetOffset)//二分查找的具体实现
+    maybeLock(lock) {
+      val idx = mmap.duplicate
+      val slot = largestLowerBoundSlotFor(idx, targetOffset, IndexSearchType.KEY)
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
-      else//将offset和物理地址（position）封装成OffsetPosition对象并返回
-        OffsetPosition(baseOffset + relativeOffset(idx, slot), physical(idx, slot))
-      //relativeOffset()方法和physical()方法是获取索引项内容的辅助方法，分别实现了
-      // 读取索引项中的相对offset和索引项中的物理地址(position)的功能
-      }
-  }
-  
-  /**
-   * Find the slot in which the largest offset less than or equal to the given
-   * target offset is stored.
-   * 
-   * @param idx The index buffer
-   * @param targetOffset The offset to look for
-   * 
-   * @return The slot found or -1 if the least entry in the index is larger than the target offset or the index is empty
-   */
-  private def indexSlotFor(idx: ByteBuffer, targetOffset: Long): Int = {
-    // we only store the difference from the base offset so calculate that
-    val relOffset = targetOffset - baseOffset
-    
-    // check if the index is empty
-    if (_entries == 0)
-      return -1
-    
-    // check if the target offset is smaller than the least offset
-    if (relativeOffset(idx, 0) > relOffset)
-      return -1
-      
-    // binary search for the entry  标准的二分查找法
-    var lo = 0
-    var hi = _entries - 1
-    while (lo < hi) {
-      val mid = ceil(hi/2.0 + lo/2.0).toInt
-      val found = relativeOffset(idx, mid)
-      if (found == relOffset)
-        return mid
-      else if (found < relOffset)
-        lo = mid
       else
-        hi = mid - 1
+        parseEntry(idx, slot)
     }
-    lo//如果找不到targetOffset对应的索引项，则返回小于targetOffset的最大的索引项位置
   }
-  
-  /* return the nth offset relative to the base offset */
-  private def relativeOffset(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * 8)
-  
-  /* return the nth physical position */
-  private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * 8 + 4)
-  
+
+  /**
+   * Find an upper bound offset for the given fetch starting position and size. This is an offset which
+   * is guaranteed to be outside the fetched range, but note that it will not generally be the smallest
+   * such offset.
+   */
+  def fetchUpperBoundOffset(fetchOffset: OffsetPosition, fetchSize: Int): Option[OffsetPosition] = {
+    maybeLock(lock) {
+      val idx = mmap.duplicate
+      val slot = smallestUpperBoundSlotFor(idx, fetchOffset.position + fetchSize, IndexSearchType.VALUE)
+      if (slot == -1)
+        None
+      else
+        Some(parseEntry(idx, slot))
+    }
+  }
+
+  private def relativeOffset(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize)
+
+  private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize + 4)
+
+  override protected def parseEntry(buffer: ByteBuffer, n: Int): OffsetPosition = {
+    OffsetPosition(baseOffset + relativeOffset(buffer, n), physical(buffer, n))
+  }
+
   /**
    * Get the nth offset mapping from the index
    * @param n The entry number in the index
@@ -200,58 +127,47 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
    */
   def entry(n: Int): OffsetPosition = {
     maybeLock(lock) {
-      if(n >= _entries)
-        throw new IllegalArgumentException("Attempt to fetch the %dth entry from an index of size %d.".format(n, _entries))
-      val idx = mmap.duplicate
-      OffsetPosition(relativeOffset(idx, n), physical(idx, n))
+      if (n >= _entries)
+        throw new IllegalArgumentException(s"Attempt to fetch the ${n}th entry from index ${file.getAbsolutePath}, " +
+          s"which has size ${_entries}.")
+      parseEntry(mmap, n)
     }
   }
-  
+
   /**
    * Append an entry for the given offset/location pair to the index. This entry must have a larger offset than all subsequent entries.
+   * @throws IndexOffsetOverflowException if the offset causes index offset to overflow
    */
-  def append(offset: Long, position: Int) {
+  def append(offset: Long, position: Int): Unit = {
     inLock(lock) {
       require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
       if (_entries == 0 || offset > _lastOffset) {
-        debug("Adding index entry %d => %d to %s.".format(offset, position, _file.getName))
-        mmap.putInt((offset - baseOffset).toInt)
+        trace(s"Adding index entry $offset => $position to ${file.getAbsolutePath}")
+        mmap.putInt(relativeOffset(offset))
         mmap.putInt(position)
         _entries += 1
         _lastOffset = offset
-        require(_entries * 8 == mmap.position, _entries + " entries but file position in index is " + mmap.position + ".")
+        require(_entries * entrySize == mmap.position(), s"$entries entries but file position in index is ${mmap.position()}.")
       } else {
-        throw new InvalidOffsetException("Attempt to append an offset (%d) to position %d no larger than the last offset appended (%d) to %s."
-          .format(offset, _entries, _lastOffset, _file.getAbsolutePath))
+        throw new InvalidOffsetException(s"Attempt to append an offset ($offset) to position $entries no larger than" +
+          s" the last offset appended (${_lastOffset}) to ${file.getAbsolutePath}.")
       }
     }
   }
-  
-  /**
-   * True iff there are no more slots available in this index
-   */
-  def isFull: Boolean = _entries >= _maxEntries
-  
-  /**
-   * Truncate the entire index, deleting all entries
-   */
-  def truncate() = truncateToEntries(0)
-  
-  /**
-   * Remove all entries from the index which have an offset greater than or equal to the given offset.
-   * Truncating to an offset larger than the largest in the index has no effect.
-   */
-  def truncateTo(offset: Long) {
+
+  override def truncate() = truncateToEntries(0)
+
+  override def truncateTo(offset: Long): Unit = {
     inLock(lock) {
       val idx = mmap.duplicate
-      val slot = indexSlotFor(idx, offset)
+      val slot = largestLowerBoundSlotFor(idx, offset, IndexSearchType.KEY)
 
       /* There are 3 cases for choosing the new size
        * 1) if there is no entry in the index <= the offset, delete everything
        * 2) if there is an entry for this exact offset, delete it and everything larger than it
        * 3) if there is no entry for this offset, delete everything larger than the next smallest
        */
-      val newEntries = 
+      val newEntries =
         if(slot < 0)
           0
         else if(relativeOffset(idx, slot) == offset - baseOffset)
@@ -265,136 +181,27 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   /**
    * Truncates index to a known number of entries.
    */
-  private def truncateToEntries(entries: Int) {
+  private def truncateToEntries(entries: Int): Unit = {
     inLock(lock) {
       _entries = entries
-      mmap.position(_entries * 8)
-      _lastOffset = readLastEntry.offset
-    }
-  }
-  
-  /**
-   * Trim this segment to fit just the valid entries, deleting all trailing unwritten bytes from
-   * the file.
-   */
-  def trimToValidSize() {
-    inLock(lock) {
-      resize(_entries * 8)
+      mmap.position(_entries * entrySize)
+      _lastOffset = lastEntry.offset
+      debug(s"Truncated index ${file.getAbsolutePath} to $entries entries;" +
+        s" position is now ${mmap.position()} and last offset is now ${_lastOffset}")
     }
   }
 
-  /**
-   * Reset the size of the memory map and the underneath file. This is used in two kinds of cases: (1) in
-   * trimToValidSize() which is called at closing the segment or new segment being rolled; (2) at
-   * loading segments from disk or truncating back to an old segment where a new log segment became active;
-   * we want to reset the index size to maximum index size to avoid rolling new segment.
-   */
-  def resize(newSize: Int) {
-    inLock(lock) {
-      val raf = new RandomAccessFile(_file, "rw")
-      val roundedNewSize = roundToExactMultiple(newSize, 8)
-      val position = mmap.position
-      
-      /* Windows won't let us modify the file length while the file is mmapped :-( */
-      if (Os.isWindows)
-        forceUnmap(mmap)
-      try {
-        raf.setLength(roundedNewSize)
-        mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
-        _maxEntries = mmap.limit / 8
-        mmap.position(position)
-      } finally {
-        CoreUtils.swallow(raf.close())
-      }
-    }
+  override def sanityCheck(): Unit = {
+    if (_entries != 0 && _lastOffset < baseOffset)
+      throw new CorruptIndexException(s"Corrupt index found, index file (${file.getAbsolutePath}) has non-zero size " +
+        s"but the last offset is ${_lastOffset} which is less than the base offset $baseOffset.")
+    if (length % entrySize != 0)
+      throw new CorruptIndexException(s"Index file ${file.getAbsolutePath} is corrupt, found $length bytes which is " +
+        s"neither positive nor a multiple of $entrySize.")
   }
-  
-  /**
-   * Forcefully free the buffer's mmap. We do this only on windows.
-   */
-  private def forceUnmap(m: MappedByteBuffer) {
-    try {
-      if(m.isInstanceOf[sun.nio.ch.DirectBuffer])
-        (m.asInstanceOf[sun.nio.ch.DirectBuffer]).cleaner().clean()
-    } catch {
-      case t: Throwable => warn("Error when freeing index buffer", t)
-    }
-  }
-  
-  /**
-   * Flush the data in the index to disk
-   */
-  def flush() {
-    inLock(lock) {
-      mmap.force()
-    }
-  }
-  
-  /**
-   * Delete this index file
-   */
-  def delete(): Boolean = {
-    info("Deleting index " + _file.getAbsolutePath)
-    if (Os.isWindows)
-      CoreUtils.swallow(forceUnmap(mmap))
-    _file.delete()
-  }
-  
-  /** The number of entries in this index */
-  def entries = _entries
-  
-  /**
-   * The number of bytes actually used by this index
-   */
-  def sizeInBytes() = 8 * _entries
-  
-  /** Close the index */
-  def close() {
-    trimToValidSize()
-  }
-  
-  /**
-   * Rename the file that backs this offset index
-   * @throws IOException if rename fails
-   */
-  def renameTo(f: File) {
-    try Utils.atomicMoveWithFallback(_file.toPath, f.toPath)
-    finally _file = f
-  }
-  
-  /**
-   * Do a basic sanity check on this index to detect obvious problems
-   * @throws IllegalArgumentException if any problems are found
-   */
-  def sanityCheck() {
-    require(_entries == 0 || lastOffset > baseOffset,
-            "Corrupt index found, index file (%s) has non-zero size but the last offset is %d and the base offset is %d"
-            .format(_file.getAbsolutePath, lastOffset, baseOffset))
-    val len = _file.length()
-    require(len % 8 == 0,
-            "Index file " + _file.getName + " is corrupt, found " + len +
-            " bytes which is not positive or not a multiple of 8.")
-  }
-  
-  /**
-   * Round a number to the greatest exact multiple of the given factor less than the given number.
-   * E.g. roundToExactMultiple(67, 8) == 64
-   */
-  private def roundToExactMultiple(number: Int, factor: Int) = factor * (number / factor)
-  
-  /**
-   * Execute the given function in a lock only if we are running on windows. We do this 
-   * because Windows won't let us resize a file while it is mmapped. As a result we have to force unmap it
-   * and this requires synchronizing reads.
-   */
-  private def maybeLock[T](lock: Lock)(fun: => T): T = {
-    if(Os.isWindows)
-      lock.lock()
-    try {
-      fun
-    } finally {
-      if(Os.isWindows)
-        lock.unlock()
-    }
-  }
+
+}
+
+object OffsetIndex extends Logging {
+  override val loggerName: String = classOf[OffsetIndex].getName
 }

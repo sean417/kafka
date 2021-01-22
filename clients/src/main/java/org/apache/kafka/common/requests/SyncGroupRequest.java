@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -16,103 +16,88 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.errors.UnsupportedVersionException;
+import org.apache.kafka.common.message.SyncGroupRequestData;
+import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.ProtoUtils;
-import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 public class SyncGroupRequest extends AbstractRequest {
 
-    private static final Schema CURRENT_SCHEMA = ProtoUtils.currentRequestSchema(ApiKeys.SYNC_GROUP.id);
-    public static final String GROUP_ID_KEY_NAME = "group_id";
-    public static final String GENERATION_ID_KEY_NAME = "generation_id";
-    public static final String MEMBER_ID_KEY_NAME = "member_id";
-    public static final String MEMBER_ASSIGNMENT_KEY_NAME = "member_assignment";
-    public static final String GROUP_ASSIGNMENT_KEY_NAME = "group_assignment";
+    public static class Builder extends AbstractRequest.Builder<SyncGroupRequest> {
 
-    private final String groupId;
-    private final int generationId;
-    private final String memberId;
-    private final Map<String, ByteBuffer> groupAssignment;
+        private final SyncGroupRequestData data;
 
-    public SyncGroupRequest(String groupId,
-                            int generationId,
-                            String memberId,
-                            Map<String, ByteBuffer> groupAssignment) {
-        super(new Struct(CURRENT_SCHEMA));
-        struct.set(GROUP_ID_KEY_NAME, groupId);
-        struct.set(GENERATION_ID_KEY_NAME, generationId);
-        struct.set(MEMBER_ID_KEY_NAME, memberId);
-
-        List<Struct> memberArray = new ArrayList<>();
-        for (Map.Entry<String, ByteBuffer> entries: groupAssignment.entrySet()) {
-            Struct memberData = struct.instance(GROUP_ASSIGNMENT_KEY_NAME);
-            memberData.set(MEMBER_ID_KEY_NAME, entries.getKey());
-            memberData.set(MEMBER_ASSIGNMENT_KEY_NAME, entries.getValue());
-            memberArray.add(memberData);
+        public Builder(SyncGroupRequestData data) {
+            super(ApiKeys.SYNC_GROUP);
+            this.data = data;
         }
-        struct.set(GROUP_ASSIGNMENT_KEY_NAME, memberArray.toArray());
 
-        this.groupId = groupId;
-        this.generationId = generationId;
-        this.memberId = memberId;
-        this.groupAssignment = groupAssignment;
+        @Override
+        public SyncGroupRequest build(short version) {
+            if (data.groupInstanceId() != null && version < 3) {
+                throw new UnsupportedVersionException("The broker sync group protocol version " +
+                        version + " does not support usage of config group.instance.id.");
+            }
+            return new SyncGroupRequest(data, version);
+        }
+
+        @Override
+        public String toString() {
+            return data.toString();
+        }
     }
 
-    public SyncGroupRequest(Struct struct) {
-        super(struct);
-        this.groupId = struct.getString(GROUP_ID_KEY_NAME);
-        this.generationId = struct.getInt(GENERATION_ID_KEY_NAME);
-        this.memberId = struct.getString(MEMBER_ID_KEY_NAME);
+    public final SyncGroupRequestData data;
 
-        groupAssignment = new HashMap<>();
+    public SyncGroupRequest(SyncGroupRequestData data, short version) {
+        super(ApiKeys.SYNC_GROUP, version);
+        this.data = data;
+    }
 
-        for (Object memberDataObj : struct.getArray(GROUP_ASSIGNMENT_KEY_NAME)) {
-            Struct memberData = (Struct) memberDataObj;
-            String memberId = memberData.getString(MEMBER_ID_KEY_NAME);
-            ByteBuffer memberMetadata = memberData.getBytes(MEMBER_ASSIGNMENT_KEY_NAME);
-            groupAssignment.put(memberId, memberMetadata);
-        }
+    public SyncGroupRequest(Struct struct, short version) {
+        super(ApiKeys.SYNC_GROUP, version);
+        this.data = new SyncGroupRequestData(struct, version);
     }
 
     @Override
-    public AbstractRequestResponse getErrorResponse(int versionId, Throwable e) {
-        switch (versionId) {
-            case 0:
-                return new SyncGroupResponse(
-                        Errors.forException(e).code(),
-                        ByteBuffer.wrap(new byte[]{}));
-            default:
-                throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
-                        versionId, this.getClass().getSimpleName(), ProtoUtils.latestVersion(ApiKeys.JOIN_GROUP.id)));
+    public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e) {
+        return new SyncGroupResponse(new SyncGroupResponseData()
+                .setErrorCode(Errors.forException(e).code())
+                .setAssignment(new byte[0])
+                .setThrottleTimeMs(throttleTimeMs));
+    }
+
+    public Map<String, ByteBuffer> groupAssignments() {
+        Map<String, ByteBuffer> groupAssignments = new HashMap<>();
+        for (SyncGroupRequestData.SyncGroupRequestAssignment assignment : data.assignments()) {
+            groupAssignments.put(assignment.memberId(), ByteBuffer.wrap(assignment.assignment()));
         }
+        return groupAssignments;
     }
 
-    public String groupId() {
-        return groupId;
+    /**
+     * ProtocolType and ProtocolName are mandatory since version 5. This methods verifies that
+     * they are defined for version 5 or higher, or returns true otherwise for older versions.
+     */
+    public boolean areMandatoryProtocolTypeAndNamePresent() {
+        if (version() >= 5)
+            return data.protocolType() != null && data.protocolName() != null;
+        else
+            return true;
     }
 
-    public int generationId() {
-        return generationId;
+    public static SyncGroupRequest parse(ByteBuffer buffer, short version) {
+        return new SyncGroupRequest(ApiKeys.SYNC_GROUP.parseRequest(version, buffer), version);
     }
 
-    public Map<String, ByteBuffer> groupAssignment() {
-        return groupAssignment;
+    @Override
+    protected Struct toStruct() {
+        return data.toStruct(version());
     }
-
-    public String memberId() {
-        return memberId;
-    }
-
-    public static SyncGroupRequest parse(ByteBuffer buffer, int versionId) {
-        return new SyncGroupRequest(ProtoUtils.parseRequest(ApiKeys.SYNC_GROUP.id, versionId, buffer));
-    }
-
 }
