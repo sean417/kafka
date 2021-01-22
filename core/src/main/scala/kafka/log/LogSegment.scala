@@ -75,14 +75,16 @@ class LogSegment(val log: FileMessageSet,
    */
   @nonthreadsafe
   def append(offset: Long, messages: ByteBufferMessageSet) {
+    //检测是否在满足添加索引项的条件
     if (messages.sizeInBytes > 0) {
       trace("Inserting %d bytes at offset %d at position %d".format(messages.sizeInBytes, offset, log.sizeInBytes()))
       // append an entry to the index (if needed)
       if(bytesSinceLastIndexEntry > indexIntervalBytes) {
         index.append(offset, log.sizeInBytes())
+        //成功添加索引后，bytesSinceLastIndexEntry重置为0
         this.bytesSinceLastIndexEntry = 0
       }
-      // append the messages
+      // append the messages 写日志文件
       log.append(messages)
       this.bytesSinceLastIndexEntry += messages.sizeInBytes
     }

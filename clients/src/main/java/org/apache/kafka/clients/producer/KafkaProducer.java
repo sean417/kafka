@@ -136,7 +136,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private final Partitioner partitioner;//分区选择器，根据一定的策略把消息路由到合适的分区。
     private final int maxRequestSize;
     private final long totalMemorySize;
-    private final Metadata metadata;//kafak集群的元数据。
+    private final Metadata metadata;//kafka集群的元数据。
     private final RecordAccumulator accumulator;
     private final Sender sender;//真正发送消息的任务
     private final Metrics metrics;
@@ -523,6 +523,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         long remainingWaitMs = maxWaitMs;
         while (metadata.fetch().partitionsForTopic(topic) == null) {
             log.trace("Requesting metadata update for topic {}.", topic);
+
             int version = metadata.requestUpdate();
             sender.wakeup();
             metadata.awaitUpdate(version, remainingWaitMs);

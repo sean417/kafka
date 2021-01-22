@@ -172,7 +172,7 @@ public class Sender implements Runnable {
      */
     void run(long now) {
         //1.从MetaDate获得Kafka集群元信息
-        Cluster cluster = metadata.fetch();
+        Cluster cluclusterster = metadata.fetch();
         // get the list of partitions with data ready to send
         //2.调用RecordAccumulator.ready()方法，根据RecordAccumulator的缓存情况，
         //选出可以向哪些Node节点发送信息，返回ReadyCheckResult对象
