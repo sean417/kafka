@@ -417,6 +417,7 @@ class LogSegment private[log] (val log: FileRecords,
     ")"
 
   /**
+   * 日志截断，包括日志记录段和索引段
    * Truncate off all index and log entries with offsets >= the given offset.
    * If the given offset is larger than the largest message in this segment, do nothing.
    *

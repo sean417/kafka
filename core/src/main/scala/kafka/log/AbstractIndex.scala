@@ -33,8 +33,8 @@ import org.apache.kafka.common.utils.{ByteBufferUnmapper, OperatingSystem, Utils
  * The abstract index class which holds entry format agnostic methods.
  *
  * @param _file The index file
- * @param baseOffset the base offset of the segment that this index is corresponding to.
- * @param maxIndexSize The maximum index size in bytes.
+ * @param baseOffset the base offset of the segment that this index is corresponding to.对应日志字段的起始位移
+ * @param maxIndexSize The maximum index size in bytes.最大索引大小。该参数的值是 Broker 端参数 segment.index.bytes 的值，即 10MB。
  */
 abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: Long, val maxIndexSize: Int = -1,
                              val writable: Boolean) extends Closeable {
@@ -43,6 +43,7 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
   // Length of the index file
   @volatile
   private var _length: Long = _
+  //一个索引项的大小
   protected def entrySize: Int
 
   /*
@@ -113,11 +114,14 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
     try {
       /* pre-allocate the file if necessary */
       if(newlyCreated) {
+        // 预设的索引文件大小不能太小，如果连一个索引项都保存不了，直接抛出异常
         if(maxIndexSize < entrySize)
           throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
+        // 第3步：设置索引文件长度，roundDownToExactMultiple计算的是不超过maxIndexSize的最大整数倍entrySize
+        // 比如maxIndexSize=1234567，entrySize=8，那么调整后的文件长度为1234560
         raf.setLength(roundDownToExactMultiple(maxIndexSize, entrySize))
       }
-
+      // 第4步：更新索引长度字段_length
       /* memory-map the file */
       _length = raf.length()
       val idx = {
@@ -127,11 +131,14 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
           raf.getChannel.map(FileChannel.MapMode.READ_ONLY, 0, _length)
       }
       /* set the position in the index for the next entry */
+      // 第6步：如果是新创建的索引文件，将MappedByteBuffer对象的当前位置置成0
+      // 如果索引文件已存在，将MappedByteBuffer对象的当前位置设置成最后一个索引项所在的位置
       if(newlyCreated)
         idx.position(0)
       else
         // if this is a pre-existing index, assume it is valid and set position to last entry
         idx.position(roundDownToExactMultiple(idx.limit(), entrySize))
+      // 第7步：返回创建的MappedByteBuffer对象
       idx
     } finally {
       CoreUtils.swallow(raf.close(), AbstractIndex)
@@ -292,6 +299,7 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 
   /**
    * Get offset relative to base offset of this index
+   * 得到相对于索引基础位移的相对位移值
    * @throws IndexOffsetOverflowException
    */
   def relativeOffset(offset: Long): Int = {
@@ -373,9 +381,10 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
    */
   private def indexSlotRangeFor(idx: ByteBuffer, target: Long, searchEntity: IndexSearchEntity): (Int, Int) = {
     // check if the index is empty
+    // // 第1步：如果索引为空，直接返回<-1,-1>对
     if(_entries == 0)
       return (-1, -1)
-
+    // 封装原版的二分查找算法
     def binarySearch(begin: Int, end: Int) : (Int, Int) = {
       // binary search for the entry
       var lo = begin
@@ -393,17 +402,22 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
       }
       (lo, if (lo == _entries - 1) -1 else lo + 1)
     }
-
+    // 第3步：确认热区首个索引项位于哪个槽。_warmEntries就是所谓的分割线，目前固定为8192字节处
+    // 如果是OffsetIndex，_warmEntries = 8192 / 8 = 1024，即第1024个槽
+    // 如果是TimeIndex，_warmEntries = 8192 / 12 = 682，即第682个槽
     val firstHotEntry = Math.max(0, _entries - 1 - _warmEntries)
     // check if the target offset is in the warm section of the index
+    // 第4步：判断target位移值在热区还是冷区
     if(compareIndexEntry(parseEntry(idx, firstHotEntry), target, searchEntity) < 0) {
+      // 如果在热区，搜索热区
       return binarySearch(firstHotEntry, _entries - 1)
     }
 
     // check if the target offset is smaller than the least offset
+    // 第5步：确保target位移值不能小于当前最小位移值
     if(compareIndexEntry(parseEntry(idx, 0), target, searchEntity) > 0)
       return (-1, 0)
-
+    // 第6步：如果在冷区，搜索冷区
     binarySearch(0, firstHotEntry)
   }
 

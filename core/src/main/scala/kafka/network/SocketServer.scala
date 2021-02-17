@@ -80,7 +80,9 @@ class SocketServer(val config: KafkaConfig,
                    val time: Time,
                    val credentialProvider: CredentialProvider)
   extends Logging with KafkaMetricsGroup with BrokerReconfigurable {
-
+  // SocketServer实现BrokerReconfigurable trait表明SocketServer的一些参数配置是允许动态修改的
+  // 即在Broker不停机的情况下修改它们
+  // SocketServer的请求队列长度，由Broker端参数queued.max.requests值而定，默认值是500
   private val maxQueuedRequests = config.queuedMaxRequests
 
   private val logContext = new LogContext(s"[SocketServer brokerId=${config.brokerId}] ")
@@ -92,12 +94,20 @@ class SocketServer(val config: KafkaConfig,
   memoryPoolSensor.add(new Meter(TimeUnit.MILLISECONDS, memoryPoolDepletedPercentMetricName, memoryPoolDepletedTimeMetricName))
   private val memoryPool = if (config.queuedMaxBytes > 0) new SimpleMemoryPool(config.queuedMaxBytes, config.socketRequestMaxBytes, false, memoryPoolSensor) else MemoryPool.NONE
   // data-plane
+
   private val dataPlaneProcessors = new ConcurrentHashMap[Int, Processor]()
+  // 处理数据类请求的Acceptor线程池，每套监听器对应一个Acceptor线程
   private[network] val dataPlaneAcceptors = new ConcurrentHashMap[EndPoint, Acceptor]()
+  // 处理数据类请求专属的RequestChannel对象
   val dataPlaneRequestChannel = new RequestChannel(maxQueuedRequests, DataPlaneMetricPrefix, time)
+
+
   // control-plane
+  // 用于处理控制类请求的Processor线程
+  // 注意：目前定义了专属的Processor线程而非线程池处理控制类请求
   private var controlPlaneProcessorOpt : Option[Processor] = None
   private[network] var controlPlaneAcceptorOpt : Option[Acceptor] = None
+  // 处理控制类请求专属的RequestChannel对象
   val controlPlaneRequestChannelOpt: Option[RequestChannel] = config.controlPlaneListenerName.map(_ =>
     new RequestChannel(20, ControlPlaneMetricPrefix, time))
 
@@ -181,7 +191,9 @@ class SocketServer(val config: KafkaConfig,
     info("Starting socket server acceptors and processors")
     this.synchronized {
       if (!startedProcessingRequests) {
+        // 启动处理控制类请求的Processor和Acceptor线程
         startControlPlaneProcessorAndAcceptor(authorizerFutures)
+        // 启动处理数据类请求的Processor和Acceptor线程
         startDataPlaneProcessorsAndAcceptors(authorizerFutures)
         startedProcessingRequests = true
       } else {
@@ -216,13 +228,14 @@ class SocketServer(val config: KafkaConfig,
     info(s"Started $threadPrefix acceptor and processor(s) for endpoint : ${endpoint.listenerName}")
   }
 
-  /**
+  /**getControlPlaneListenerNameAndSecurityProtocol
    * Starts processors of all the data-plane acceptors and all the acceptors of this server.
    *
    * We start inter-broker listener before other listeners. This allows authorization metadata for
    * other listeners to be stored in Kafka topics in this cluster.
    */
   private def startDataPlaneProcessorsAndAcceptors(authorizerFutures: Map[Endpoint, CompletableFuture[Void]]): Unit = {
+    // 获取Broker间通讯所用的监听器，默认是PLAINTEXT
     val interBrokerListener = dataPlaneAcceptors.asScala.keySet
       .find(_.listenerName == config.interBrokerListenerName)
       .getOrElse(throw new IllegalStateException(s"Inter-broker listener ${config.interBrokerListenerName} not found, endpoints=${dataPlaneAcceptors.keySet}"))
@@ -230,6 +243,7 @@ class SocketServer(val config: KafkaConfig,
       dataPlaneAcceptors.asScala.filter { case (k, _) => k != interBrokerListener }.values
     orderedAcceptors.foreach { acceptor =>
       val endpoint = acceptor.endPoint
+      // 启动Processor和Acceptor线程
       startAcceptorAndProcessors(DataPlaneThreadPrefix, endpoint, acceptor, authorizerFutures)
     }
   }
@@ -246,17 +260,24 @@ class SocketServer(val config: KafkaConfig,
 
   private def endpoints = config.listeners.map(l => l.listenerName -> l).toMap
 
+  //为数据面分配资源
   private def createDataPlaneAcceptorsAndProcessors(dataProcessorsPerListener: Int,
                                                     endpoints: Seq[EndPoint]): Unit = {
+    // 遍历broker集合
     endpoints.foreach { endpoint =>
+      // 将监听器纳入到连接配额管理之下
       connectionQuotas.addListener(config, endpoint.listenerName)
+      // 为监听器创建对应的Acceptor线程
       val dataPlaneAcceptor = createAcceptor(endpoint, DataPlaneMetricPrefix)
+      // 为监听器创建多个Processor线程。具体数目由num.network.threads决定
       addDataPlaneProcessors(dataPlaneAcceptor, endpoint, dataProcessorsPerListener)
+      // 将<监听器，Acceptor线程>对保存起来统一管理
       dataPlaneAcceptors.put(endpoint, dataPlaneAcceptor)
       info(s"Created data-plane acceptor and processors for endpoint : ${endpoint.listenerName}")
     }
   }
 
+  //为控制面分配资源
   private def createControlPlaneAcceptorAndProcessor(endpointOpt: Option[EndPoint]): Unit = {
     endpointOpt.foreach { endpoint =>
       connectionQuotas.addListener(config, endpoint.listenerName)
@@ -534,9 +555,13 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
                               brokerId: Int,
                               connectionQuotas: ConnectionQuotas,
                               metricPrefix: String) extends AbstractServerThread(connectionQuotas) with KafkaMetricsGroup {
-
+  // 创建底层的NIO Selector对象
+  // Selector对象负责执行底层实际I/O操作，如监听连接创建请求、读写请求等
   private val nioSelector = NSelector.open()
+  // Broker端创建对应的ServerSocketChannel实例
+  // 后续把该Channel向上一步的Selector对象注册
   val serverChannel = openServerSocket(endPoint.host, endPoint.port)
+  // 创建Processor线程池，实际上是Processor线程数组
   private val processors = new ArrayBuffer[Processor]()
   private val processorsStarted = new AtomicBoolean
   private val blockedPercentMeter = newMeter(s"${metricPrefix}AcceptorBlockedPercent",
@@ -555,6 +580,11 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
   }
 
   private def startProcessors(processors: Seq[Processor], processorThreadPrefix: String): Unit = synchronized {
+    // 线程命名规范：processor线程前缀-kafka-network-thread-broker序号-监听器名称-安全协议-Processor序号
+    // 假设为序号为0的Broker设置PLAINTEXT://localhost:9092作为连接信息，那么3个Processor线程名称分别为：
+    // data-plane-kafka-network-thread-0-ListenerName(PLAINTEXT)-PLAINTEXT-0
+    // data-plane-kafka-network-thread-0-ListenerName(PLAINTEXT)-PLAINTEXT-1
+    // data-plane-kafka-network-thread-0-ListenerName(PLAINTEXT)-PLAINTEXT-2
     processors.foreach { processor =>
       KafkaThread.nonDaemon(
         s"${processorThreadPrefix}-kafka-network-thread-$brokerId-${endPoint.listenerName}-${endPoint.securityProtocol}-${processor.id}",
@@ -592,12 +622,16 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
    * Accept loop that checks for new connection attempts
    */
   def run(): Unit = {
+    //注册OP_ACCEPT事件
     serverChannel.register(nioSelector, SelectionKey.OP_ACCEPT)
+    // 等待Acceptor线程启动完成
     startupComplete()
     try {
+      // 当前使用的Processor序号，从0开始，最大值是num.network.threads - 1
       var currentProcessorIndex = 0
       while (isRunning) {
         try {
+          // 每500毫秒获取一次就绪I/O事件
           val ready = nioSelector.select(500)
           if (ready > 0) {
             val keys = nioSelector.selectedKeys()
@@ -606,7 +640,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
               try {
                 val key = iter.next
                 iter.remove()
-
+                // 调用accept方法创建Socket连接
                 if (key.isAcceptable) {
                   accept(key).foreach { socketChannel =>
                     // Assign the channel to the next processor (using round-robin) to which the
@@ -616,12 +650,14 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
                     var processor: Processor = null
                     do {
                       retriesLeft -= 1
+                      // 指定由哪个Processor线程进行处理
                       processor = synchronized {
                         // adjust the index (if necessary) and retrieve the processor atomically for
                         // correct behaviour in case the number of processors is reduced dynamically
                         currentProcessorIndex = currentProcessorIndex % processors.length
                         processors(currentProcessorIndex)
                       }
+                      // 更新Processor线程序号
                       currentProcessorIndex += 1
                     } while (!assignNewConnection(socketChannel, processor, retriesLeft == 0))
                   }
@@ -642,6 +678,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
         }
       }
     } finally {
+      // 执行各种资源关闭逻辑
       debug("Closing server socket and selector.")
       CoreUtils.swallow(serverChannel.close(), this, Level.ERROR)
       CoreUtils.swallow(nioSelector.close(), this, Level.ERROR)
@@ -815,19 +852,21 @@ private[kafka] class Processor(val id: Int,
   private var nextConnectionIndex = 0
 
   override def run(): Unit = {
+    // 等待Processor线程启动完成
     startupComplete()
     try {
       while (isRunning) {
         try {
+
           // setup any new connections that have been queued up
-          configureNewConnections()
+          configureNewConnections()// 创建新连接
           // register any new responses for writing
-          processNewResponses()
-          poll()
-          processCompletedReceives()
-          processCompletedSends()
-          processDisconnected()
-          closeExcessConnections()
+          processNewResponses()// 发送Response，并将Response放入到inflightResponses临时队列
+          poll()// 真正的发送response到客户端。执行NIO poll，获取对应SocketChannel上准备就绪的I/O操作
+          processCompletedReceives()// 将接收到的Request放入Request队列
+          processCompletedSends()//为临时Response队列中的Response执行回调逻辑
+          processDisconnected()// 处理因发送失败而导致的连接断开
+          closeExcessConnections()// 关闭超过配额限制部分的连接
         } catch {
           // We catch all the throwables here to prevent the processor thread from exiting. We do this because
           // letting a processor exit might cause a bigger impact on the broker. This behavior might need to be
@@ -838,7 +877,7 @@ private[kafka] class Processor(val id: Int,
           case e: Throwable => processException("Processor got uncaught exception.", e)
         }
       }
-    } finally {
+    } finally {// 关闭底层资源
       debug(s"Closing selector - processor $id")
       CoreUtils.swallow(closeAll(), this, Level.ERROR)
       shutdownComplete()
@@ -877,6 +916,7 @@ private[kafka] class Processor(val id: Int,
             handleChannelMuteEvent(channelId, ChannelMuteEvent.RESPONSE_SENT)
             tryUnmuteChannel(channelId)
 
+          // 真正的发送Response，并将Response放入inflightResponses用于发送成功或失败后执行回调逻辑
           case response: SendResponse =>
             sendResponse(response, response.responseSend)
           case response: CloseConnectionResponse =>
@@ -938,8 +978,10 @@ private[kafka] class Processor(val id: Int,
   }
 
   private def processCompletedReceives(): Unit = {
+    // 遍历所有已接收的Request
     selector.completedReceives.forEach { receive =>
       try {
+        // 保证对应连接通道已经建立
         openOrClosingChannel(receive.source) match {
           case Some(channel) =>
             val header = parseRequestHeader(receive.payload)
@@ -948,6 +990,7 @@ private[kafka] class Processor(val id: Int,
               trace(s"Begin re-authentication: $channel")
             else {
               val nowNanos = time.nanoseconds()
+              // 如果认证会话已过期，则关闭连接
               if (channel.serverAuthenticationSessionExpired(nowNanos)) {
                 // be sure to decrease connection count and drop any in-flight responses
                 debug(s"Disconnecting expired channel: $channel : $header")
@@ -970,6 +1013,7 @@ private[kafka] class Processor(val id: Int,
                       apiVersionsRequest.data.clientSoftwareVersion))
                   }
                 }
+                // 核心代码：将Request添加到Request队列
                 requestChannel.sendRequest(req)
                 selector.mute(connectionId)
                 handleChannelMuteEvent(connectionId, ChannelMuteEvent.REQUEST_RECEIVED)
@@ -1089,13 +1133,15 @@ private[kafka] class Processor(val id: Int,
    * existing channels are handled promptly.
    */
   private def configureNewConnections(): Unit = {
-    var connectionsProcessed = 0
+    var connectionsProcessed = 0// 当前已配置的连接数计数器
     while (connectionsProcessed < connectionQueueSize && !newConnections.isEmpty) {
-      val channel = newConnections.poll()
+      val channel = newConnections.poll()// 从连接队列中取出SocketChannel
       try {
         debug(s"Processor $id listening to new connection from ${channel.socket.getRemoteSocketAddress}")
+        // 用给定Selector注册该Channel
+        // 底层就是调用Java NIO的SocketChannel.register(selector, SelectionKey.OP_READ)
         selector.register(connectionId(channel.socket), channel)
-        connectionsProcessed += 1
+        connectionsProcessed += 1// 更新计数器
       } catch {
         // We explicitly catch all exceptions and close the socket to avoid a socket leak.
         case e: Throwable =>

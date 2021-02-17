@@ -95,19 +95,19 @@ import kafka.coordinator.group.GroupOverview
 /**
  * Logic to handle the various Kafka requests
  */
-class KafkaApis(val requestChannel: RequestChannel,
-                val replicaManager: ReplicaManager,
-                val adminManager: AdminManager,
-                val groupCoordinator: GroupCoordinator,
-                val txnCoordinator: TransactionCoordinator,
-                val controller: KafkaController,
-                val zkClient: KafkaZkClient,
-                val brokerId: Int,
-                val config: KafkaConfig,
-                val metadataCache: MetadataCache,
+class KafkaApis(val requestChannel: RequestChannel,//请求通道
+                val replicaManager: ReplicaManager,//副本管理
+                val adminManager: AdminManager,// 主题、分区、配置等方面的管理器
+                val groupCoordinator: GroupCoordinator,// 消费者组协调器组件
+                val txnCoordinator: TransactionCoordinator,// 事务管理器组件
+                val controller: KafkaController,// 控制器组件
+                val zkClient: KafkaZkClient,// ZooKeeper客户端程序，Kafka依赖于该类实现与ZooKeeper交互
+                val brokerId: Int,// broker.id参数值
+                val config: KafkaConfig,// Kafka配置类
+                val metadataCache: MetadataCache,// 元数据缓存类
                 val metrics: Metrics,
                 val authorizer: Option[Authorizer],
-                val quotas: QuotaManagers,
+                val quotas: QuotaManagers,// 配额管理器组件
                 val fetchManager: FetchManager,
                 brokerTopicStats: BrokerTopicStats,
                 val clusterId: String,
@@ -131,6 +131,12 @@ class KafkaApis(val requestChannel: RequestChannel,
    */
   override def handle(request: RequestChannel.Request): Unit = {
     try {
+      // 根据请求头部信息中的apiKey字段判断属于哪类请求
+      // 然后调用响应的handle***方法
+      // 如果新增RPC协议类型，则：
+      // 1. 添加新的apiKey标识新请求类型
+      // 2. 添加新的case分支
+      // 3. 添加对应的handle***方法
       trace(s"Handling request:${request.requestDesc(true)} from connection ${request.context.connectionId};" +
         s"securityProtocol:${request.context.securityProtocol},principal:${request.context.principal}")
       request.header.apiKey match {
@@ -202,8 +208,10 @@ class KafkaApis(val requestChannel: RequestChannel,
       // try to complete delayed action. In order to avoid conflicting locking, the actions to complete delayed requests
       // are kept in a queue. We add the logic to check the ReplicaManager queue at the end of KafkaApis.handle() and the
       // expiration thread for certain delayed operations (e.g. DelayedJoin)
+      // 如果是严重错误，则抛出异常
       replicaManager.tryCompleteActions()
       // The local completion time may be set while processing the request. Only record it if it's unset.
+      // 普通异常的话，记录下错误日志
       if (request.apiLocalCompleteTimeNanos < 0)
         request.apiLocalCompleteTimeNanos = time.nanoseconds
     }
@@ -1104,6 +1112,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       adminZkClient.createTopic(topic, numPartitions, replicationFactor, properties, RackAwareMode.Safe)
       info("Auto creation of topic %s with %d partitions and replication factor %d is successful"
         .format(topic, numPartitions, replicationFactor))
+      // 显式封装一个LEADER_NOT_AVAILABLE Response
       metadataResponseTopic(Errors.LEADER_NOT_AVAILABLE, topic, isInternal(topic), util.Collections.emptyList())
     } catch {
       case _: TopicExistsException => // let it go, possibly another broker created this topic
@@ -1487,7 +1496,9 @@ class KafkaApis(val requestChannel: RequestChannel,
             .setThrottleTimeMs(throttleMs)
         )
     }
+    // 调用GroupCoordinator的handleListGroups方法拿到所有Group信息
     val (error, groups) = groupCoordinator.handleListGroups(states)
+    // 如果Clients具备CLUSTER资源的DESCRIBE权限
     if (authorize(request.context, DESCRIBE, CLUSTER, CLUSTER_NAME))
       // With describe cluster access all groups are returned. We keep this alternative for backward compatibility.
       sendResponseMaybeThrottle(request, requestThrottleMs =>
@@ -3146,6 +3157,8 @@ class KafkaApis(val requestChannel: RequestChannel,
                                 logIfDenied: Boolean = true,
                                 refCount: Int = 1): Boolean = {
     authorizer.forall { authZ =>
+      // 获取待鉴权的资源类型
+      // 常见的资源类型如TOPIC、GROUP、CLUSTER等
       val resource = new ResourcePattern(resourceType, resourceName, PatternType.LITERAL)
       val actions = Collections.singletonList(new Action(operation, resource, refCount, logIfAllowed, logIfDenied))
       authZ.authorize(requestContext, actions).get(0) == AuthorizationResult.ALLOWED

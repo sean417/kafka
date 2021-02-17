@@ -49,7 +49,7 @@ import org.apache.kafka.common.errors.InvalidOffsetException
  * All external APIs translate from relative offsets to full offsets, so users of this class do not interact with the internal
  * storage format.
  */
-// Avoid shadowing mutable `file` in AbstractIndex
+// Avoid shadowing mutable `file` in AbstrrelativeOffsetactIndex
 class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable: Boolean = true)
     extends AbstractIndex(_file, baseOffset, maxIndexSize, writable) {
   import OffsetIndex._
@@ -87,8 +87,12 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
    */
   def lookup(targetOffset: Long): OffsetPosition = {
     maybeLock(lock) {
+      //用私有变量做一个mmap的镜像
       val idx = mmap.duplicate
+      // largestLowerBoundSlotFor方法底层使用了改进版的二分查找算法寻找对应的槽
       val slot = largestLowerBoundSlotFor(idx, targetOffset, IndexSearchType.KEY)
+      // 如果没找到，返回一个空的位置，即物理文件位置从0开始，表示从头读日志文件
+      // 否则返回slot槽对应的索引项
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
       else
@@ -113,9 +117,10 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
   }
 
   private def relativeOffset(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize)
-
+  //由于索引文件的总字节数就是索引项字节数乘以索引项数，因此，
+  // 代码结合 entrySize 和 buffer.getInt 方法能够轻松地计算出第 n 个索引项所处的物理文件位置
   private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize + 4)
-
+  //把key的相对位移转换为物理位移
   override protected def parseEntry(buffer: ByteBuffer, n: Int): OffsetPosition = {
     OffsetPosition(baseOffset + relativeOffset(buffer, n), physical(buffer, n))
   }
@@ -140,15 +145,24 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
    */
   def append(offset: Long, position: Int): Unit = {
     inLock(lock) {
+      // 第1步：判断索引文件未写满
       require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
+      // 第2步：必须满足以下条件之一才允许写入索引项：
+      // 条件1：当前索引文件为空
+      // 条件2：要写入的位移大于当前所有已写入的索引项的位移——Kafka规定索引项中的位移值必须是单调增加的
       if (_entries == 0 || offset > _lastOffset) {
         trace(s"Adding index entry $offset => $position to ${file.getAbsolutePath}")
+        // 第3步A：向mmap中写入相对位移值
         mmap.putInt(relativeOffset(offset))
+        // 第3步B：向mmap中写入物理位置信息
         mmap.putInt(position)
+        // 第4步：更新其他元数据统计信息，如当前索引项计数器_entries和当前索引项最新位移值_lastOffset
         _entries += 1
         _lastOffset = offset
+        // 第5步：执行校验。写入的索引项格式必须符合要求，即索引项个数*单个索引项占用字节数匹配当前文件物理大小，否则说明文件已损坏
         require(_entries * entrySize == mmap.position(), s"$entries entries but file position in index is ${mmap.position()}.")
       } else {
+        // 如果第2步中两个条件都不满足，不能执行写入索引项操作，抛出异常
         throw new InvalidOffsetException(s"Attempt to append an offset ($offset) to position $entries no larger than" +
           s" the last offset appended (${_lastOffset}) to ${file.getAbsolutePath}.")
       }

@@ -63,6 +63,9 @@ object EndPoint {
  * Part of the broker definition - matching host/port pair to a protocol
  */
 case class EndPoint(host: String, port: Int, listenerName: ListenerName, securityProtocol: SecurityProtocol) {
+  // 构造完整的broker连接字符串
+  // 格式为：监听器名称:主机名：端口
+  // 比如：PLAINTEXT://kafka-host:9092
   def connectionString: String = {
     val hostport =
       if (host == null)

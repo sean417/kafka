@@ -328,15 +328,18 @@ class RequestChannel(val queueSize: Int,
     }
   })
 
+
   def addProcessor(processor: Processor): Unit = {
+    // 添加Processor到Processor线程池
     if (processors.putIfAbsent(processor.id, processor) != null)
       warn(s"Unexpected processor with processorId ${processor.id}")
-
+    // 为给定Processor对象创建对应的监控指标
     newGauge(responseQueueSizeMetricName, () => processor.responseQueueSize,
       Map(ProcessorMetricTag -> processor.id.toString))
   }
 
   def removeProcessor(processorId: Int): Unit = {
+    // 从Processor线程池中移除给定Processor线程
     processors.remove(processorId)
     removeMetric(responseQueueSizeMetricName, Map(ProcessorMetricTag -> processorId.toString))
   }
@@ -348,7 +351,7 @@ class RequestChannel(val queueSize: Int,
 
   /** Send a response back to the socket server to be sent over the network */
   def sendResponse(response: RequestChannel.Response): Unit = {
-
+    // 构造Trace日志输出字符串
     if (isTraceEnabled) {
       val requestHeader = response.request.header
       val message = response match {
@@ -377,10 +380,11 @@ class RequestChannel(val queueSize: Int,
       // For a given request, these may happen in addition to one in the previous section, skip updating the metrics
       case _: StartThrottlingResponse | _: EndThrottlingResponse => ()
     }
-
+    // 找出response对应的Processor线程，即request当初是由哪个Processor线程处理的
     val processor = processors.get(response.processor)
     // The processor may be null if it was shutdown. In this case, the connections
     // are closed, so the response is dropped.
+    // 将response对象放置到对应Processor线程的Response队列中
     if (processor != null) {
       processor.enqueueResponse(response)
     }

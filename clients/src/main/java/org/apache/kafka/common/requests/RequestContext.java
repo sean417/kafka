@@ -31,16 +31,17 @@ import java.nio.ByteBuffer;
 import org.apache.kafka.server.authorizer.AuthorizableRequestContext;
 
 import static org.apache.kafka.common.protocol.ApiKeys.API_VERSIONS;
-
+//和Request类一起使用的上下文类，
 public class RequestContext implements AuthorizableRequestContext {
-    public final RequestHeader header;
-    public final String connectionId;
-    public final InetAddress clientAddress;
+    public final RequestHeader header;// Request头部数据，主要是一些对用户不可见的元数据信息，如Request类型、Request API版本、clientId等
+    public final String connectionId;// Request发送方的TCP连接串标识，由Kafka根据一定规则定义，主要用于表示TCP连接
+    public final InetAddress clientAddress;// Request发送方IP地址
     public final KafkaPrincipal principal;
-    public final ListenerName listenerName;
-    public final SecurityProtocol securityProtocol;
-    public final ClientInformation clientInformation;
+    public final ListenerName listenerName; // 监听器名称，可以是预定义的监听器（如PLAINTEXT），也可自行定义
+    public final SecurityProtocol securityProtocol;// 安全协议类型，目前支持4种：PLAINTEXT、SSL、SASL_PLAINTEXT、SASL_SSL
+    public final ClientInformation clientInformation;// 用户自定义的一些连接方信息
 
+    //从给定的ByteBuffer中提取出Request和对应的Size值
     public RequestContext(RequestHeader header,
                           String connectionId,
                           InetAddress clientAddress,
