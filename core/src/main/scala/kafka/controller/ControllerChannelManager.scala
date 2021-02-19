@@ -79,13 +79,14 @@ class ControllerChannelManager(controllerContext: ControllerContext,
       brokerStateInfo.values.toList.foreach(removeExistingBroker)
     }
   }
-
+  //从名字看，就是发送请求，实际上就是把请求对象提交到请求队列。
   def sendRequest(brokerId: Int, request: AbstractControlRequest.Builder[_ <: AbstractControlRequest],
                   callback: AbstractResponse => Unit = null): Unit = {
     brokerLock synchronized {
       val stateInfoOpt = brokerStateInfo.get(brokerId)
       stateInfoOpt match {
         case Some(stateInfo) =>
+          //把请求对象提交到请求队列。
           stateInfo.messageQueue.put(QueueItem(request.apiKey, request, callback, time.milliseconds()))
         case None =>
           warn(s"Not sending request $request to broker $brokerId, since it is offline.")
@@ -96,8 +97,11 @@ class ControllerChannelManager(controllerContext: ControllerContext,
   def addBroker(broker: Broker): Unit = {
     // be careful here. Maybe the startup() API has already started the request send thread
     brokerLock synchronized {
+      // 如果该Broker是新Broker的话
       if (!brokerStateInfo.contains(broker.id)) {
+        // 将新Broker加入到Controller管理，并创建对应的RequestSendThread线程
         addNewBroker(broker)
+        // 启动RequestSendThread线程
         startRequestSendThread(broker.id)
       }
     }
@@ -204,12 +208,16 @@ class ControllerChannelManager(controllerContext: ControllerContext,
   }
 
   protected def startRequestSendThread(brokerId: Int): Unit = {
+    //从brokerStateInfo拿出requestSendThread
     val requestThread = brokerStateInfo(brokerId).requestSendThread
-    if (requestThread.getState == Thread.State.NEW)
+    if (requestThread.getState == Thread.State.NEW) {
+      //启动拿出的requestSendThread
       requestThread.start()
+    }
   }
 }
-
+// 每个 QueueItem 的核心字段都是 AbstractControlRequest.Builder 对象。
+// 你基本上可以认为，它就是阻塞队列上 AbstractControlRequest 类型。
 case class QueueItem(apiKey: ApiKeys, request: AbstractControlRequest.Builder[_ <: AbstractControlRequest],
                      callback: AbstractResponse => Unit, enqueueTimeMs: Long)
 
@@ -242,14 +250,17 @@ class RequestSendThread(val controllerId: Int,
       while (isRunning && !isSendSuccessful) {
         // if a broker goes down for a long time, then at some point the controller's zookeeper listener will trigger a
         // removeBroker which will invoke shutdown() on this thread. At that point, we will stop retrying.
+        // 发送请求，等待接收Response
         try {
+          // 如果没有创建与目标Broker的TCP连接，或连接暂时不可用
           if (!brokerReady()) {
             isSendSuccessful = false
-            backoff()
+            backoff()// 等待重试
           }
           else {
             val clientRequest = networkClient.newClientRequest(brokerNode.idString, requestBuilder,
               time.milliseconds(), true)
+            // 发送请求，同步等待接收Response
             clientResponse = NetworkClientUtils.sendAndReceive(networkClient, clientRequest, time)
             isSendSuccessful = true
           }
@@ -262,9 +273,11 @@ class RequestSendThread(val controllerId: Int,
             backoff()
         }
       }
+      //如果接收到了返回
       if (clientResponse != null) {
         val requestHeader = clientResponse.requestHeader
         val api = requestHeader.apiKey
+        // 此Response的请求类型必须是LeaderAndIsrRequest、StopReplicaRequest或UpdateMetadataRequest中的一种
         if (api != ApiKeys.LEADER_AND_ISR && api != ApiKeys.STOP_REPLICA && api != ApiKeys.UPDATE_METADATA)
           throw new KafkaException(s"Unexpected apiKey received: $apiKey")
 
@@ -275,7 +288,7 @@ class RequestSendThread(val controllerId: Int,
           s"${requestHeader.correlationId} sent to broker $brokerNode")
 
         if (callback != null) {
-          callback(response)
+          callback(response)// 处理回调
         }
       }
     } catch {

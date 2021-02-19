@@ -36,28 +36,35 @@ object ControllerEventManager {
 }
 
 trait ControllerEventProcessor {
+  // 接收一个 Controller 事件，并进行处并进行处理。
   def process(event: ControllerEvent): Unit
+  // 接收一个 Controller 事件，并抢占队列之前的事件进行优先处理。
   def preempt(event: ControllerEvent): Unit
 }
 
+// 每个QueuedEvent定义了两个字段
+// event: ControllerEvent类，表示Controller事件
+// enqueueTimeMs：表示Controller事件被放入到事件队列的时间戳
 class QueuedEvent(val event: ControllerEvent,
                   val enqueueTimeMs: Long) {
+  // 标识事件是否开始被处理
   val processingStarted = new CountDownLatch(1)
+  // 标识事件是否被处理过
   val spent = new AtomicBoolean(false)
-
+  // 处理事件
   def process(processor: ControllerEventProcessor): Unit = {
     if (spent.getAndSet(true))
       return
     processingStarted.countDown()
     processor.process(event)
   }
-
+  // 抢占式处理事件
   def preempt(processor: ControllerEventProcessor): Unit = {
     if (spent.getAndSet(true))
       return
     processor.preempt(event)
   }
-
+  // 阻塞等待事件被处理完成
   def awaitProcessing(): Unit = {
     processingStarted.await()
   }
@@ -100,15 +107,20 @@ class ControllerEventManager(controllerId: Int,
   }
 
   def put(event: ControllerEvent): QueuedEvent = inLock(putLock) {
+    // 构建QueuedEvent实例
     val queuedEvent = new QueuedEvent(event, time.milliseconds())
+    // 插入到事件队列
     queue.put(queuedEvent)
+    // 返回新建QueuedEvent实例
     queuedEvent
   }
-
+  //先执行具有高优先级的抢占式事件，之后清空队列所有事件，最后再插入指定的事件。
   def clearAndPut(event: ControllerEvent): QueuedEvent = inLock(putLock){
+    // 优先处理抢占式事件
     val preemptedEvents = new ArrayList[QueuedEvent]()
     queue.drainTo(preemptedEvents)
     preemptedEvents.forEach(_.preempt(processor))
+    // 调用上面的put方法将给定事件插入到事件队列
     put(event)
   }
 
@@ -118,17 +130,19 @@ class ControllerEventManager(controllerId: Int,
     logIdent = s"[ControllerEventThread controllerId=$controllerId] "
 
     override def doWork(): Unit = {
+      // 从事件队列中获取待处理的Controller事件，否则等待
       val dequeued = pollFromEventQueue()
       dequeued.event match {
+        // 如果是关闭线程事件，什么都不用做。关闭线程由外部来执行
         case ShutdownEventThread => // The shutting down of the thread has been initiated at this point. Ignore this event.
         case controllerEvent =>
           _state = controllerEvent.state
-
+          // 更新对应事件在队列中保存的时间
           eventQueueTimeHist.update(time.milliseconds() - dequeued.enqueueTimeMs)
 
           try {
             def process(): Unit = dequeued.process(processor)
-
+            // 处理事件，同时计算处理速率
             rateAndTimeMetrics.get(state) match {
               case Some(timer) => timer.time { process() }
               case None => process()
