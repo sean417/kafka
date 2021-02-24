@@ -246,6 +246,7 @@ class KafkaController(val config: KafkaConfig,
   private def state: ControllerState = eventManager.state
 
   /**
+   * 只有选举成功后，才会启动这个方法。
    * This callback is invoked by the zookeeper leader elector on electing the current broker as the new controller.
    * It does the following things on the become-controller state change -
    * 1. Initializes the controller's context object that holds cache objects for current topics, live brokers and
@@ -287,6 +288,7 @@ class KafkaController(val config: KafkaConfig,
     info("Sending update metadata request")
     sendUpdateMetadataRequest(controllerContext.liveOrShuttingDownBrokerIds.toSeq, Set.empty)
 
+    //启动副本状态机和分区状态机，但只有在 Controller 所在的 Broker 上，副本状态机才会被启动
     replicaStateMachine.startup()
     partitionStateMachine.startup()
 
