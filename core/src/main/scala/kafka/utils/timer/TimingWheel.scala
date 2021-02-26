@@ -111,6 +111,9 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
   private[this] def addOverflowWheel(): Unit = {
     synchronized {
       if (overflowWheel == null) {
+        // 创建新的TimingWheel实例
+        // 滴答时长tickMs等于下层时间轮总时长
+        // 每层的轮子数都是相同的
         overflowWheel = new TimingWheel(
           tickMs = interval,
           wheelSize = wheelSize,
@@ -123,20 +126,26 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
   }
 
   def add(timerTaskEntry: TimerTaskEntry): Boolean = {
+    // 获取定时任务的过期时间戳
     val expiration = timerTaskEntry.expirationMs
-
+    // 如果该任务已然被取消了，则无需添加，直接返回
     if (timerTaskEntry.cancelled) {
       // Cancelled
       false
+      // 如果该任务超时时间已过期
     } else if (expiration < currentTime + tickMs) {
       // Already expired
       false
+      // 如果该任务超时时间在本层时间轮覆盖时间范围内
     } else if (expiration < currentTime + interval) {
       // Put in its own bucket
       val virtualId = expiration / tickMs
+      // 计算要被放入到哪个Bucket中
       val bucket = buckets((virtualId % wheelSize.toLong).toInt)
+      // 添加到Bucket中
       bucket.add(timerTaskEntry)
-
+      // 设置Bucket过期时间
+      // 如果该时间变更过，说明Bucket是新建或被重用，将其加回到DelayQueue
       // Set the bucket expiration time
       if (bucket.setExpiration(virtualId * tickMs)) {
         // The bucket needs to be enqueued because it was an expired bucket
@@ -147,18 +156,25 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
         queue.offer(bucket)
       }
       true
+      // 本层时间轮无法容纳该任务，交由上层时间轮处理
     } else {
       // Out of the interval. Put it into the parent timer
+      // 按需创建上层时间轮
       if (overflowWheel == null) addOverflowWheel()
+      // 加入到上层时间轮中
       overflowWheel.add(timerTaskEntry)
     }
   }
 
   // Try to advance the clock
+  // 推动时钟
+  // 有可能下层时间轮转完，需要把上层时间轮的任务放到下层的时间轮。
   def advanceClock(timeMs: Long): Unit = {
+    // 向前驱动到的时点要超过Bucket的时间范围，才是有意义的推进，否则什么都不做
+    // 更新当前时间currentTime到下一个Bucket的起始时点
     if (timeMs >= currentTime + tickMs) {
       currentTime = timeMs - (timeMs % tickMs)
-
+      // 同时尝试为上一层时间轮做向前推进动作
       // Try to advance the clock of the overflow wheel if present
       if (overflowWheel != null) overflowWheel.advanceClock(currentTime)
     }

@@ -129,18 +129,19 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
 private[timer] class TimerTaskEntry(val timerTask: TimerTask, val expirationMs: Long) extends Ordered[TimerTaskEntry] {
 
   @volatile
-  var list: TimerTaskList = null
-  var next: TimerTaskEntry = null
-  var prev: TimerTaskEntry = null
+  var list: TimerTaskList = null  // 绑定的Bucket链表实例
+  var next: TimerTaskEntry = null // next指针
+  var prev: TimerTaskEntry = null // prev指针
 
   // if this timerTask is already held by an existing timer task entry,
   // setTimerTaskEntry will remove it.
+  // 关联给定的定时任务
   if (timerTask != null) timerTask.setTimerTaskEntry(this)
-
+  // 关联定时任务是否已经被取消了
   def cancelled: Boolean = {
     timerTask.getTimerTaskEntry != this
   }
-
+  // 从Bucket链表中移除自己
   def remove(): Unit = {
     var currentList = list
     // If remove is called when another thread is moving the entry from a task entry list to another,
