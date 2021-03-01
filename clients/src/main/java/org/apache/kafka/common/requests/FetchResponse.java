@@ -143,13 +143,17 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
             this.error = Errors.forCode(partitionResponse.errorCode());
         }
 
-        public PartitionData(Errors error,
-                             long highWatermark,
-                             long lastStableOffset,
-                             long logStartOffset,
+        public PartitionData(Errors error,// 错误码
+                             long highWatermark,// 高水位值
+                             long lastStableOffset,// 最新LSO值,属于kafka事务的概念
+                             long logStartOffset,// 最新Log Start Offset值
+                             // 期望的Read Replica
+                             // KAFKA 2.4之后支持部分Follower副本可以对外提供读服务
                              Optional<Integer> preferredReadReplica,
+                             // 该分区对应的已终止事务列表
                              List<AbortedTransaction> abortedTransactions,
                              Optional<FetchResponseData.EpochEndOffset> divergingEpoch,
+                             // 消息集合，最重要的字段！
                              T records) {
             this.preferredReplica = preferredReadReplica;
             this.abortedTransactions = abortedTransactions;

@@ -638,6 +638,12 @@ class Partition(val topicPartition: TopicPartition,
    *  If the leader replica id does not change and the new epoch is equal or one
    *  greater (that is, no updates have been missed), return false to indicate to the
    * replica manager that state is already correct and the become-follower steps can be skipped
+   *
+   *  Partition 的 makeFollower 方法的执行逻辑，主要是包括以下 4 步：
+   *  更新 Controller Epoch 值；
+   *  保存副本列表（Assigned Replicas，AR）和清空 ISR；
+   *  创建日志对象；
+   *  重设 Leader 副本的 Broker ID。
    */
   def makeFollower(partitionState: LeaderAndIsrPartitionState,
                    highWatermarkCheckpoints: OffsetCheckpoints): Boolean = {
@@ -950,6 +956,7 @@ class Partition(val topicPartition: TopicPartition,
   private def tryCompleteDelayedRequests(): Unit = delayedOperations.checkAndCompleteAll()
 
   def maybeShrinkIsr(): Unit = {
+    // 判断是否需要执行ISR收缩
     val needsIsrUpdate = !isrState.isInflight && inReadLock(leaderIsrUpdateLock) {
       needsShrinkIsr()
     }
@@ -964,10 +971,11 @@ class Partition(val topicPartition: TopicPartition,
           info(s"Shrinking ISR from ${isrState.isr.mkString(",")} to $newIsrLog. " +
                s"Leader: (highWatermark: ${leaderLog.highWatermark}, endOffset: ${leaderLog.logEndOffset}). " +
                s"Out of sync replicas: $outOfSyncReplicaLog.")
-
+          // 3.更新ZooKeeper中分区的ISR数据以及Broker的元数据缓存中的数据
           shrinkIsr(outOfSyncReplicaIds)
 
           // we may need to increment high watermark since ISR could be down to 1
+          // 4.尝试更新Leader副本的高水位值
           maybeIncrementLeaderHW(leaderLog)
         } else {
           false
@@ -976,7 +984,9 @@ class Partition(val topicPartition: TopicPartition,
     }
 
     // some delayed operations may be unblocked after HW changed
+    // // 如果Leader副本的高水位值抬升了
     if (leaderHWIncremented)
+    // 尝试解锁一下延迟请求
       tryCompleteDelayedRequests()
   }
 
