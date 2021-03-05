@@ -21,14 +21,15 @@ import java.util
 
 import kafka.utils.nonthreadsafe
 
-case class MemberSummary(memberId: String,
-                         groupInstanceId: Option[String],
-                         clientId: String,
-                         clientHost: String,
-                         metadata: Array[Byte],
-                         assignment: Array[Byte])
+case class MemberSummary(memberId: String,// 成员ID，由Kafka自动生成
+                         groupInstanceId: Option[String],// Consumer端参数group.instance.id值
+                         clientId: String,// client.id参数值
+                         clientHost: String,// Consumer端程序主机名
+                         metadata: Array[Byte],// 消费者组成员使用的分配策略
+                         assignment: Array[Byte])// 成员订阅分区
 
 private object MemberMetadata {
+  // 提取分区分配策略集合
   def plainProtocolSet(supportedProtocols: List[(String, Array[Byte])]) = supportedProtocols.map(_._1).toSet
 }
 
@@ -58,16 +59,16 @@ private[group] class MemberMetadata(var memberId: String,
                                     val groupInstanceId: Option[String],
                                     val clientId: String,
                                     val clientHost: String,
-                                    val rebalanceTimeoutMs: Int,
-                                    val sessionTimeoutMs: Int,
-                                    val protocolType: String,
-                                    var supportedProtocols: List[(String, Array[Byte])]) {
+                                    val rebalanceTimeoutMs: Int,// Rebalane操作超时时间
+                                    val sessionTimeoutMs: Int,// 会话超时时间，如果一个消费者心跳超过这个时间就认为这个消费者下线，就会触发新一轮的rebalance
+                                    val protocolType: String,//协议类型。它实际上标识的是消费者组被用在了哪个场景。这里的场景具体有两个：第一个是作为普通的消费者组使用，该字段对应的值就是 consumer；第二个是供 Kafka Connect 组件中的消费者使用，该字段对应的值是 connect。对消费者组而言，是"consumer"
+                                    var supportedProtocols: List[(String, Array[Byte])]) {//标识成员配置的多组分区分配策略。
 
-  var assignment: Array[Byte] = Array.empty[Byte]
-  var awaitingJoinCallback: JoinGroupResult => Unit = null
-  var awaitingSyncCallback: SyncGroupResult => Unit = null
-  var isLeaving: Boolean = false
-  var isNew: Boolean = false
+  var assignment: Array[Byte] = Array.empty[Byte]//保存分配给该成员的分区分配方案。
+  var awaitingJoinCallback: JoinGroupResult => Unit = null//表示组成员是否正在等待加入组。
+  var awaitingSyncCallback: SyncGroupResult => Unit = null//表示组成员是否正在等待 GroupCoordinator 发送分配方案。
+  var isLeaving: Boolean = false//表示组成员是否发起“退出组”的操作。
+  var isNew: Boolean = false//表示是否是消费者组下的新成员。
   val isStaticMember: Boolean = groupInstanceId.isDefined
 
   // This variable is used to track heartbeat completion through the delayed
@@ -84,6 +85,7 @@ private[group] class MemberMetadata(var memberId: String,
    * Get metadata corresponding to the provided protocol.
    */
   def metadata(protocol: String): Array[Byte] = {
+    // 从配置的分区分配策略中寻找给定策略
     supportedProtocols.find(_._1 == protocol) match {
       case Some((_, metadata)) => metadata
       case None =>

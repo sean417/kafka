@@ -3275,6 +3275,7 @@ class KafkaApis(val requestChannel: RequestChannel,//请求通道
 
   // Throttle the channel if the request quota is enabled but has been violated. Regardless of throttling, send the
   // response immediately.
+  // 回调函数，用于broker处理完的回调
   private def sendResponseMaybeThrottle(request: RequestChannel.Request,
                                         createResponse: Int => AbstractResponse,
                                         onComplete: Option[Send => Unit] = None): Unit = {
