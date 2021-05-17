@@ -42,7 +42,7 @@ public class GroupRebalanceConfig {
     public final int heartbeatIntervalMs;
     public final String groupId;
     public final Optional<String> groupInstanceId;
-    public final long retryBackoffMs;
+    public final long retryBackoffMs; //默认100ms,心跳时间
     public final boolean leaveGroupOnClose;
 
     public GroupRebalanceConfig(AbstractConfig config, ProtocolType protocolType) {

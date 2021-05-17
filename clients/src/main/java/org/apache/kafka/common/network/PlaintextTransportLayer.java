@@ -31,8 +31,8 @@ import java.security.Principal;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 
 public class PlaintextTransportLayer implements TransportLayer {
-    private final SelectionKey key;
-    private final SocketChannel socketChannel;
+    private final SelectionKey key; //java nio 中的事件
+    private final SocketChannel socketChannel;//java nio 中的SocketChannel
     private final Principal principal = KafkaPrincipal.ANONYMOUS;
 
     public PlaintextTransportLayer(SelectionKey key) throws IOException {
@@ -44,7 +44,7 @@ public class PlaintextTransportLayer implements TransportLayer {
     public boolean ready() {
         return true;
     }
-
+    //连接是否完成，如果完成就关注OP_READ事件并取消OP_CONNECT事件
     @Override
     public boolean finishConnect() throws IOException {
         boolean connected = socketChannel.finishConnect();
@@ -93,6 +93,7 @@ public class PlaintextTransportLayer implements TransportLayer {
 
     /**
     * Reads a sequence of bytes from this channel into the given buffer.
+     * 从channel中读一个byte序列到给定的 ByteBuffer中
     *
     * @param dst The buffer into which bytes are to be transferred
     * @return The number of bytes read, possible zero or -1 if the channel has reached end-of-stream

@@ -41,6 +41,7 @@ public class ProducerInterceptors<K, V> implements Closeable {
     }
 
     /**
+     * 生产者发送消息的时候调用的回调方法
      * This is called when client sends the record to KafkaProducer, before key and value gets serialized.
      * The method calls {@link ProducerInterceptor#onSend(ProducerRecord)} method. ProducerRecord
      * returned from the first interceptor's onSend() is passed to the second interceptor onSend(), and so on in the
@@ -72,6 +73,7 @@ public class ProducerInterceptors<K, V> implements Closeable {
     }
 
     /**
+     * 服务端发回响应或响应超时的时候调用的回调方法
      * This method is called when the record sent to the server has been acknowledged, or when sending the record fails before
      * it gets sent to the server. This method calls {@link ProducerInterceptor#onAcknowledgement(RecordMetadata, Exception)}
      * method for each interceptor.

@@ -118,14 +118,21 @@ public class ByteBufferOutputStream extends OutputStream {
     }
 
     private void expandBuffer(int remainingRequired) {
+        //1.评估需要多少空间
         int expandSize = Math.max((int) (buffer.limit() * REALLOCATION_FACTOR), buffer.position() + remainingRequired);
+        //2.申请新的ByteBuffer
         ByteBuffer temp = ByteBuffer.allocate(expandSize);
+        //3.获得写时候的limit。
         int limit = limit();
+        //4.把写状态转换为读状态
         buffer.flip();
+        //5.读到temp里
         temp.put(buffer);
+        //6.改成写时候的limit
         buffer.limit(limit);
         // reset the old buffer's position so that the partial data in the new buffer cannot be mistakenly consumed
         // we should ideally only do this for the original buffer, but the additional complexity doesn't seem worth it
+        //7.更新原来的buffer的position，防止
         buffer.position(initialPosition);
         buffer = temp;
     }

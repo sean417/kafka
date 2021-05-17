@@ -133,6 +133,7 @@ import static java.util.Collections.emptyList;
 public class Fetcher<K, V> implements Closeable {
     private final Logger log;
     private final LogContext logContext;
+    //通信组件
     private final ConsumerNetworkClient client;
     private final Time time;
     private final int minBytes;
@@ -249,11 +250,13 @@ public class Fetcher<K, V> implements Closeable {
     public synchronized int sendFetches() {
         // Update metrics in case there was an assignment change
         sensors.maybeUpdateAssignment(subscriptions);
-
+        //1.封装node对应的fetch请求的map。
         Map<Node, FetchSessionHandler.FetchRequestData> fetchRequestMap = prepareFetchRequests();
         for (Map.Entry<Node, FetchSessionHandler.FetchRequestData> entry : fetchRequestMap.entrySet()) {
+            //2.按node分别做发送请求的准备工作。
             final Node fetchTarget = entry.getKey();
             final FetchSessionHandler.FetchRequestData data = entry.getValue();
+            //2.1 构建请求
             final FetchRequest.Builder request = FetchRequest.Builder
                     .forConsumer(this.maxWaitMs, this.minBytes, data.toSend())
                     .isolationLevel(isolationLevel)
@@ -265,12 +268,14 @@ public class Fetcher<K, V> implements Closeable {
             if (log.isDebugEnabled()) {
                 log.debug("Sending {} {} to broker {}", isolationLevel, data.toString(), fetchTarget);
             }
+            //2.2 把请求放入ConsumerNetworkClient的缓存中
             RequestFuture<ClientResponse> future = client.send(fetchTarget, request);
             // We add the node to the set of nodes with pending fetch requests before adding the
             // listener because the future may have been fulfilled on another thread (e.g. during a
             // disconnection being handled by the heartbeat thread) which will mean the listener
             // will be invoked synchronously.
             this.nodesWithPendingFetchRequests.add(entry.getKey().id());
+            //2.3配置响应的监听器。
             future.addListener(new RequestFutureListener<ClientResponse>() {
                 @Override
                 public void onSuccess(ClientResponse resp) {
@@ -317,7 +322,7 @@ public class Fetcher<K, V> implements Closeable {
 
                                     Iterator<? extends RecordBatch> batches = partitionData.records().batches().iterator();
                                     short responseVersion = resp.requestHeader().apiVersion();
-
+                                    //创建CompletedFetch，并缓存到completedFetches队列中去。
                                     completedFetches.add(new CompletedFetch(partition, partitionData,
                                             metricAggregator, batches, fetchOffset, responseVersion));
                                 }
@@ -599,13 +604,19 @@ public class Fetcher<K, V> implements Closeable {
      * @throws TopicAuthorizationException If there is TopicAuthorization error in fetchResponse.
      */
     public Map<TopicPartition, List<ConsumerRecord<K, V>>> fetchedRecords() {
+        //1.构建map,map存储用来拉取的分区对应的消息数据。
         Map<TopicPartition, List<ConsumerRecord<K, V>>> fetched = new HashMap<>();
         Queue<CompletedFetch> pausedCompletedFetches = new ArrayDeque<>();
+        //2.获取的最多的拉取消息，默认500个。
         int recordsRemaining = maxPollRecords;
 
         try {
+            //3.不到500个就轮询。
             while (recordsRemaining > 0) {
+                //4.如果当前获取消息的 nextInLineFetch 为空，或者已经拉取完毕
+                //则需要从completedFetches重新获取
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed) {
+                    //5.如果上一个分区缓存中的缓存已经拉取完了，直接中断本次拉取，返回空的消息直到有缓存数据为止
                     CompletedFetch records = completedFetches.peek();
                     if (records == null) break;
 
@@ -635,8 +646,9 @@ public class Fetcher<K, V> implements Closeable {
                     pausedCompletedFetches.add(nextInLineFetch);
                     nextInLineFetch = null;
                 } else {
+                    //从分区缓存中获取指定数量的消息
                     List<ConsumerRecord<K, V>> records = fetchRecords(nextInLineFetch, recordsRemaining);
-
+                    //把获取的消息进行封装
                     if (!records.isEmpty()) {
                         TopicPartition partition = nextInLineFetch.partition;
                         List<ConsumerRecord<K, V>> currentRecords = fetched.get(partition);
@@ -668,16 +680,19 @@ public class Fetcher<K, V> implements Closeable {
     }
 
     private List<ConsumerRecord<K, V>> fetchRecords(CompletedFetch completedFetch, int maxRecords) {
+        //判断是否分配了这个分区
         if (!subscriptions.isAssigned(completedFetch.partition)) {
             // this can happen when a rebalance happened before fetched records are returned to the consumer's poll call
             log.debug("Not returning fetched records for partition {} since it is no longer assigned",
                     completedFetch.partition);
+            //这个分区是否是可获取的
         } else if (!subscriptions.isFetchable(completedFetch.partition)) {
             // this can happen when a partition is paused before fetched records are returned to the consumer's
             // poll call or if the offset is being reset
             log.debug("Not returning fetched records for assigned partition {} since it is no longer fetchable",
                     completedFetch.partition);
         } else {
+            //1.获取要从服务端获取分区的offset
             FetchPosition position = subscriptions.position(completedFetch.partition);
             if (position == null) {
                 throw new IllegalStateException("Missing position for fetchable partition " + completedFetch.partition);

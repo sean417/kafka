@@ -22,14 +22,16 @@ import java.nio.ByteBuffer;
  * A size delimited Send that consists of a 4 byte network-ordered size N followed by N bytes of content
  */
 public class NetworkSend extends ByteBufferSend {
-
+    //实例化
     public NetworkSend(String destination, ByteBuffer buffer) {
         super(destination, sizeBuffer(buffer.remaining()), buffer);
     }
 
     private static ByteBuffer sizeBuffer(int size) {
+        //声明4个字节的ByteBuffer
         ByteBuffer sizeBuffer = ByteBuffer.allocate(4);
         sizeBuffer.putInt(size);
+        //3.写结束，更新postion的位置
         sizeBuffer.rewind();
         return sizeBuffer;
     }

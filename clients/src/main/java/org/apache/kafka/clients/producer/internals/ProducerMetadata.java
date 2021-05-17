@@ -36,8 +36,12 @@ public class ProducerMetadata extends Metadata {
     // If a topic hasn't been accessed for this many milliseconds, it is removed from the cache.
     private final long metadataIdleMs;
 
-    /* Topics with expiry time */
+    /* Topics with expiry time
+    *  主题和主题对应的过期时间。5分钟过期，nowMs+5分钟。
+    *  这个集合是比较新的主题，过了期就认为不新了，会被删除
+    *  */
     private final Map<String, Long> topics = new HashMap<>();
+    //新的主题集合
     private final Set<String> newTopics = new HashSet<>();
     private final Logger log;
     private final Time time;
@@ -54,16 +58,17 @@ public class ProducerMetadata extends Metadata {
         this.time = time;
     }
 
+    //请求在刷新主题集合里主题元数据
     @Override
     public synchronized MetadataRequest.Builder newMetadataRequestBuilder() {
         return new MetadataRequest.Builder(new ArrayList<>(topics.keySet()), true);
     }
-
+    //请求新主题集合里的主题元数据
     @Override
     public synchronized MetadataRequest.Builder newMetadataRequestBuilderForNewTopics() {
         return new MetadataRequest.Builder(new ArrayList<>(newTopics), true);
     }
-
+    //生产者每发送一条消息都会调用一次，更新消息对应主题的过期时间。
     public synchronized void add(String topic, long nowMs) {
         Objects.requireNonNull(topic, "topic cannot be null");
         if (topics.put(topic, nowMs + metadataIdleMs) == null) {
@@ -93,7 +98,7 @@ public class ProducerMetadata extends Metadata {
     public synchronized boolean containsTopic(String topic) {
         return topics.containsKey(topic);
     }
-
+    //判断是否要在刷新主题集合里保存这个主题
     @Override
     public synchronized boolean retainTopic(String topic, boolean isInternal, long nowMs) {
         Long expireMs = topics.get(topic);
@@ -125,13 +130,16 @@ public class ProducerMetadata extends Metadata {
         if (isClosed())
             throw new KafkaException("Requested metadata update after close");
     }
-
+    /*
+       根据返回的元数据更新
+     */
     @Override
     public synchronized void update(int requestVersion, MetadataResponse response, boolean isPartialUpdate, long nowMs) {
         super.update(requestVersion, response, isPartialUpdate, nowMs);
 
         // Remove all topics in the response that are in the new topic set. Note that if an error was encountered for a
         // new topic's metadata, then any work to resolve the error will include the topic in a full metadata update.
+        // 找出已获得相关元数据的相关主题，并从新主题集合中删除
         if (!newTopics.isEmpty()) {
             for (MetadataResponse.TopicMetadata metadata : response.topicMetadata()) {
                 newTopics.remove(metadata.topic());

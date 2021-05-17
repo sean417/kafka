@@ -133,6 +133,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
     }
 
     /**
+     * 抛出一个异常，
      * Raise an exception. The request will be marked as failed, and the caller can either
      * handle the exception or throw it.
      * @param e corresponding exception to be passed to caller

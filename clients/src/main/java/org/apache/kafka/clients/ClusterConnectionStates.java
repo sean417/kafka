@@ -41,6 +41,7 @@ final class ClusterConnectionStates {
     final static double RECONNECT_BACKOFF_JITTER = 0.2;
     final static int CONNECTION_SETUP_TIMEOUT_EXP_BASE = 2;
     final static double CONNECTION_SETUP_TIMEOUT_JITTER = 0.2;
+    // key是nodeid,value是NodeConnectionState对象
     private final Map<String, NodeConnectionState> nodeState;
     private final Logger log;
     private Set<String> connectingNodes;
@@ -71,6 +72,9 @@ final class ClusterConnectionStates {
      * @param id the connection id to check
      * @param now the current time in ms
      * @return true if we can initiate a new connection
+     * 初始化连接的条件，必须同时满足：
+     * 1.连接必须是isDisconnected。
+     * 2.由于连接不能太频繁，两次重试之间时间差要大于重试退避时间。
      */
     public boolean canConnect(String id, long now) {
         NodeConnectionState state = nodeState.get(id);
@@ -142,6 +146,7 @@ final class ClusterConnectionStates {
      */
     public void connecting(String id, long now, String host, ClientDnsLookup clientDnsLookup) {
         NodeConnectionState connectionState = nodeState.get(id);
+        //修改连接状态为CONNECTING。
         if (connectionState != null && connectionState.host().equals(host)) {
             connectionState.lastConnectAttemptMs = now;
             connectionState.state = ConnectionState.CONNECTING;
@@ -155,6 +160,7 @@ final class ClusterConnectionStates {
 
         // Create a new NodeConnectionState if nodeState does not already contain one
         // for the specified id or if the hostname associated with the node id changed.
+        //更新连接状态的map集合
         nodeState.put(id, new NodeConnectionState(ConnectionState.CONNECTING, now,
             reconnectBackoff.backoff(0), connectionSetupTimeout.backoff(0), host, clientDnsLookup));
         connectingNodes.add(id);
@@ -457,7 +463,7 @@ final class ClusterConnectionStates {
      */
     private static class NodeConnectionState {
 
-        ConnectionState state;
+        ConnectionState state;//连接状态
         AuthenticationException authenticationException;
         long lastConnectAttemptMs;
         long failedAttempts;

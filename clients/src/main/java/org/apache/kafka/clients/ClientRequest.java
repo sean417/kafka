@@ -32,6 +32,7 @@ public final class ClientRequest {
     private final String clientId;
     private final long createdTimeMs;
     private final boolean expectResponse;
+    //请求超时时间，默认30000ms
     private final int requestTimeoutMs;
     private final RequestCompletionHandler callback;
 

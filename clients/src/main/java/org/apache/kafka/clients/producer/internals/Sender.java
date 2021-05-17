@@ -71,31 +71,33 @@ public class Sender implements Runnable {
     private final Logger log;
 
     /* the state of each nodes connection */
-    private final KafkaClient client;
+    private final KafkaClient client;//管理网络连接，操作网络读写
 
     /* the record accumulator that batches records */
-    private final RecordAccumulator accumulator;
+    private final RecordAccumulator accumulator;//消息积聚器
 
     /* the metadata for the client */
-    private final ProducerMetadata metadata;
+    private final ProducerMetadata metadata;//生产者的元数据
 
     /* the flag indicating whether the producer should guarantee the message order on the broker or not. */
-    private final boolean guaranteeMessageOrder;
+    private final boolean guaranteeMessageOrder;//是否保证消息在服务端的顺序性
 
     /* the maximum request size to attempt to send to the server */
-    private final int maxRequestSize;
+    private final int maxRequestSize;//向服务端生产消息时，最大请求字节数，默认值是1M
 
     /* the number of acknowledgements to request from the server */
-    private final short acks;
+    private final short acks;//producer的消息发送确认机制,默认-1
 
     /* the number of times to retry a failed request before giving up */
-    private final int retries;
+
+    //resend any request that fails with a potentially transient error
+    private final int retries;//发送失败后的重试次数。默认是0次
 
     /* the clock instance used for getting the time */
     private final Time time;
 
     /* true while the sender thread is still running */
-    private volatile boolean running;
+    private volatile boolean running;//Sender线程是否还在运行中
 
     /* true when the caller wants to ignore all unsent/inflight messages and force close.  */
     private volatile boolean forceClose;
@@ -104,19 +106,19 @@ public class Sender implements Runnable {
     private final SenderMetrics sensors;
 
     /* the max time to wait for the server to respond to the request*/
-    private final int requestTimeoutMs;
+    private final int requestTimeoutMs;//等待服务端响应的最大时间。默认30s
 
     /* The max time to wait before retrying a request which has failed */
-    private final long retryBackoffMs;
+    private final long retryBackoffMs;//失败重试退避时间
 
     /* current request API versions supported by the known brokers */
-    private final ApiVersions apiVersions;
+    private final ApiVersions apiVersions;//所有node支持的api版本。
 
     /* all the state related to transactions, in particular the producer id, producer epoch, and sequence numbers */
-    private final TransactionManager transactionManager;
+    private final TransactionManager transactionManager;//事务管理器
 
     // A per-partition queue of batches ordered by creation time for tracking the in-flight batches
-    private final Map<TopicPartition, List<ProducerBatch>> inFlightBatches;
+    private final Map<TopicPartition, List<ProducerBatch>> inFlightBatches;//key为分区，value是List<ProducerBatch>的集合。
 
     public Sender(LogContext logContext,
                   KafkaClient client,
@@ -165,28 +167,36 @@ public class Sender implements Runnable {
     }
 
     private void maybeRemoveAndDeallocateBatch(ProducerBatch batch) {
+        //删除inFlightBatches里tp相关队列
         maybeRemoveFromInflightBatches(batch);
+        //释放空间
         this.accumulator.deallocate(batch);
     }
 
     /**
      *  Get the in-flight batches that has reached delivery timeout.
+     *  默认2 minutes过期
      */
     private List<ProducerBatch> getExpiredInflightBatches(long now) {
+        //1.创建过期批次集合
         List<ProducerBatch> expiredBatches = new ArrayList<>();
-
+        //2.遍历inFlightBatches
         for (Iterator<Map.Entry<TopicPartition, List<ProducerBatch>>> batchIt = inFlightBatches.entrySet().iterator(); batchIt.hasNext();) {
             Map.Entry<TopicPartition, List<ProducerBatch>> entry = batchIt.next();
             List<ProducerBatch> partitionInFlightBatches = entry.getValue();
             if (partitionInFlightBatches != null) {
                 Iterator<ProducerBatch> iter = partitionInFlightBatches.iterator();
+                //3.遍历某个分区的生产者批量发送列表
                 while (iter.hasNext()) {
                     ProducerBatch batch = iter.next();
+                    //4.判断batch是否投递超时。默认消息投递过期时间是2 minutes
                     if (batch.hasReachedDeliveryTimeout(accumulator.getDeliveryTimeoutMs(), now)) {
+                        //5.删除投递过期的batch
                         iter.remove();
                         // expireBatches is called in Sender.sendProducerData, before client.poll.
                         // The !batch.isDone() invariant should always hold. An IllegalStateException
                         // exception will be thrown if the invariant is violated.
+                        //6.如果 batch 没有最终的状态，就把batch加入到expiredBatches集合
                         if (!batch.isDone()) {
                             expiredBatches.add(batch);
                         } else {
@@ -194,6 +204,7 @@ public class Sender implements Runnable {
                                 batch.createdMs + " gets unexpected final state " + batch.finalState());
                         }
                     } else {
+                        //更新下一个Batch的超时时间。
                         accumulator.maybeUpdateNextBatchExpiryTime(batch);
                         break;
                     }
@@ -205,7 +216,7 @@ public class Sender implements Runnable {
         }
         return expiredBatches;
     }
-
+    //把消息从nodeId-->List<ProducerBatch>组织的map集合转换为按 topicPartition-->List<ProducerBatch>组织的map集合
     private void addToInflightBatches(List<ProducerBatch> batches) {
         for (ProducerBatch batch : batches) {
             List<ProducerBatch> inflightBatchList = inFlightBatches.get(batch.topicPartition);
@@ -321,16 +332,23 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
+        //1.发送消息到KafkaChanel缓存
         long pollTimeout = sendProducerData(currentTimeMs);
+        //2.发送消息到网络
         client.poll(pollTimeout, currentTimeMs);
     }
-
+    //消息发送到暂存类中，并返回poll超时时间。
+    // 因为send和poll在一个线程中，poll的
+    // 超时时间过长可能会造成不能及时send消息
     private long sendProducerData(long now) {
+        //1.获取元数据
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
+        //2.得到应该发送数据的节点
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
+        //3.如果主题的 leader 分区对应的节点不存在，就要更新元数据
         if (!result.unknownLeaderTopics.isEmpty()) {
             // The set of topics with unknown leader contains topics with leader election pending as well as
             // topics which may have expired. Add the topic again to metadata to ensure it is included
@@ -344,10 +362,12 @@ public class Sender implements Runnable {
         }
 
         // remove any nodes we aren't ready to send to
+        //4.在result返回的node集合的基础上再检查客户端和node。
         Iterator<Node> iter = result.readyNodes.iterator();
         long notReadyTimeout = Long.MAX_VALUE;
         while (iter.hasNext()) {
             Node node = iter.next();
+            //检查node连接是否可用，并且是否可用往这个节点发送数据
             if (!this.client.ready(node, now)) {
                 iter.remove();
                 notReadyTimeout = Math.min(notReadyTimeout, this.client.pollDelayMs(node, now));
@@ -355,6 +375,7 @@ public class Sender implements Runnable {
         }
 
         // create produce requests
+        //5.把要发送的消息转换成按节点组织的集合
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(cluster, result.readyNodes, this.maxRequestSize, now);
         addToInflightBatches(batches);
         if (guaranteeMessageOrder) {
@@ -366,7 +387,10 @@ public class Sender implements Runnable {
         }
 
         accumulator.resetNextBatchExpiryTime();
+        //6.收集和处理过期的batch
+        //Sender自定义inflightBatches集合里过期的batch
         List<ProducerBatch> expiredInflightBatches = getExpiredInflightBatches(now);
+        //accumulator定义的batches集合里过期的batch
         List<ProducerBatch> expiredBatches = this.accumulator.expiredBatches(now);
         expiredBatches.addAll(expiredInflightBatches);
 
@@ -375,6 +399,7 @@ public class Sender implements Runnable {
         // we need to reset the producer id here.
         if (!expiredBatches.isEmpty())
             log.trace("Expired {} batches in accumulator", expiredBatches.size());
+        //7.处理过期的batch
         for (ProducerBatch expiredBatch : expiredBatches) {
             String errorMessage = "Expiring " + expiredBatch.recordCount + " record(s) for " + expiredBatch.topicPartition
                 + ":" + (now - expiredBatch.createdMs) + " ms has passed since batch creation";
@@ -385,7 +410,7 @@ public class Sender implements Runnable {
             }
         }
         sensors.updateProduceRequestMetrics(batches);
-
+        // 7.设定pollTimeout
         // If we have any nodes that are ready to send + have sendable data, poll with 0 timeout so this can immediately
         // loop and try sending more data. Otherwise, the timeout will be the smaller value between next batch expiry
         // time, and the delay time for checking data availability. Note that the nodes may have data that isn't yet
@@ -402,6 +427,7 @@ public class Sender implements Runnable {
             // otherwise the select time will be the time difference between now and the metadata expiry time;
             pollTimeout = 0;
         }
+        //8.发送消息
         sendProduceRequests(batches, now);
         return pollTimeout;
     }
@@ -542,6 +568,7 @@ public class Sender implements Runnable {
 
     /**
      * Handle a produce response
+     * 处理服务端发来的response。
      */
     private void handleProduceResponse(ClientResponse response, Map<TopicPartition, ProducerBatch> batches, long now) {
         RequestHeader requestHeader = response.requestHeader();
@@ -559,12 +586,14 @@ public class Sender implements Runnable {
         } else {
             log.trace("Received produce response from node {} with correlation id {}", response.destination(), correlationId);
             // if we have a response, parse it
+            // 正常响应
             if (response.hasResponse()) {
                 ProduceResponse produceResponse = (ProduceResponse) response.responseBody();
                 for (Map.Entry<TopicPartition, ProduceResponse.PartitionResponse> entry : produceResponse.responses().entrySet()) {
                     TopicPartition tp = entry.getKey();
                     ProduceResponse.PartitionResponse partResp = entry.getValue();
                     ProducerBatch batch = batches.get(tp);
+                    //调用completeBatch()方法处理。
                     completeBatch(batch, partResp, correlationId, now);
                 }
                 this.sensors.recordLatency(response.destination(), response.requestLatencyMs());
@@ -605,6 +634,7 @@ public class Sender implements Runnable {
             maybeRemoveAndDeallocateBatch(batch);
             this.sensors.recordBatchSplit();
         } else if (error != Errors.NONE) {
+            //能否再次发送
             if (canRetry(batch, response, now)) {
                 log.warn(
                     "Got error produce response with correlation id {} on topic-partition {}, retrying ({} attempts left). Error: {}",
@@ -612,7 +642,9 @@ public class Sender implements Runnable {
                     batch.topicPartition,
                     this.retries - batch.attempts() - 1,
                     error);
+                //再次入对
                 reenqueueBatch(batch, now);
+                //重复发送
             } else if (error == Errors.DUPLICATE_SEQUENCE_NUMBER) {
                 // If we have received a duplicate sequence error, it means that the sequence number has advanced beyond
                 // the sequence of the current batch, and we haven't retained batch metadata on the broker to return
@@ -645,6 +677,7 @@ public class Sender implements Runnable {
                 metadata.requestUpdate();
             }
         } else {
+            //正常执行回调
             completeBatch(batch, response);
         }
 
@@ -663,7 +696,7 @@ public class Sender implements Runnable {
         if (transactionManager != null) {
             transactionManager.handleCompletedBatch(batch, response);
         }
-
+         //执行回调，并释放 accumular 的空间
         if (batch.done(response.baseOffset, response.logAppendTime, null)) {
             maybeRemoveAndDeallocateBatch(batch);
         }
@@ -675,7 +708,7 @@ public class Sender implements Runnable {
                            boolean adjustSequenceNumbers) {
         failBatch(batch, response.baseOffset, response.logAppendTime, exception, adjustSequenceNumbers);
     }
-
+    //失败batch的处理
     private void failBatch(ProducerBatch batch,
                            long baseOffset,
                            long logAppendTime,
@@ -686,13 +719,18 @@ public class Sender implements Runnable {
         }
 
         this.sensors.recordErrors(batch.topicPartition.topic(), batch.recordCount);
-
+        //超时调用回调
         if (batch.done(baseOffset, logAppendTime, exception)) {
             maybeRemoveAndDeallocateBatch(batch);
         }
     }
 
     /**
+     * 是否能重试？
+     * 1.没有到投递的超时时间。
+     * 2.batch重试次数没超过设定的次数。
+     * 3.批次没结束。
+     * 4.如果不被事务管理响应的异常属于可重试的异常，如果被事务管理调用事务管理器自定义的判断器判断是否能重试
      * We can retry a send if the error is transient and the number of attempts taken is fewer than the maximum allowed.
      * We can also retry OutOfOrderSequence exceptions for future batches, since if the first batch has failed, the
      * future batches are certain to fail with an OutOfOrderSequence exception.
@@ -708,6 +746,7 @@ public class Sender implements Runnable {
 
     /**
      * Transfer the record batches into a list of produce requests on a per-node basis
+     * 核对后的集合分节点发送消息
      */
     private void sendProduceRequests(Map<Integer, List<ProducerBatch>> collated, long now) {
         for (Map.Entry<Integer, List<ProducerBatch>> entry : collated.entrySet())
@@ -716,11 +755,12 @@ public class Sender implements Runnable {
 
     /**
      * Create a produce request from the given record batches
+     * 把ProducerBatch类型转换成ClientRequest，并把clientRequest放到KafkaChannel的缓存里。
      */
     private void sendProduceRequest(long now, int destination, short acks, int timeout, List<ProducerBatch> batches) {
         if (batches.isEmpty())
             return;
-
+        //1.初始化两个集合，produceRecordsByPartition用于构建请求，recordsByPartition用于构建回调方法
         Map<TopicPartition, MemoryRecords> produceRecordsByPartition = new HashMap<>(batches.size());
         final Map<TopicPartition, ProducerBatch> recordsByPartition = new HashMap<>(batches.size());
 
@@ -730,7 +770,7 @@ public class Sender implements Runnable {
             if (batch.magic() < minUsedMagic)
                 minUsedMagic = batch.magic();
         }
-
+        //2.按分区填充produceRecordsByPartition和recordsByPartition两个集合。
         for (ProducerBatch batch : batches) {
             TopicPartition tp = batch.topicPartition;
             MemoryRecords records = batch.records();
@@ -752,13 +792,16 @@ public class Sender implements Runnable {
         if (transactionManager != null && transactionManager.isTransactional()) {
             transactionalId = transactionManager.transactionalId();
         }
+        //3.创建requestBuilder对象。
         ProduceRequest.Builder requestBuilder = ProduceRequest.Builder.forMagic(minUsedMagic, acks, timeout,
                 produceRecordsByPartition, transactionalId);
+        //4.构建回调
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
-
         String nodeId = Integer.toString(destination);
+        //5.创建clientRequest
         ClientRequest clientRequest = client.newClientRequest(nodeId, requestBuilder, now, acks != 0,
                 requestTimeoutMs, callback);
+        //6.把clientRequest发送给NetworkClient，完成消息的预发送。
         client.send(clientRequest, now);
         log.trace("Sent produce request to {}: {}", nodeId, requestBuilder);
     }

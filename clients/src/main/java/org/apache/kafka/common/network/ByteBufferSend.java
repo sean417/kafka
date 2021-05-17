@@ -26,10 +26,10 @@ import java.nio.channels.GatheringByteChannel;
  */
 public class ByteBufferSend implements Send {
 
-    private final String destination;
-    private final int size;
-    protected final ByteBuffer[] buffers;
-    private int remaining;
+    private final String destination; //channel id
+    private final int size; //一共要写多少字节
+    protected final ByteBuffer[] buffers;//用于写入到channel里的ByteBuffer数组
+    private int remaining;//一共还剩多少字节没有写完
     private boolean pending = false;
 
     public ByteBufferSend(String destination, ByteBuffer... buffers) {
@@ -37,7 +37,7 @@ public class ByteBufferSend implements Send {
         this.buffers = buffers;
         for (ByteBuffer buffer : buffers)
             remaining += buffer.remaining();
-        this.size = remaining;
+        this.size = remaining;//计算需要写入字节的总和
     }
 
     @Override
@@ -55,11 +55,15 @@ public class ByteBufferSend implements Send {
         return this.size;
     }
 
+    //把buffer数组写入到channel中。
     @Override
     public long writeTo(GatheringByteChannel channel) throws IOException {
+        //1.调用kafka传输层方法把buffer数组写入到SocketChannel，并返回写入的字节数
         long written = channel.write(buffers);
+
         if (written < 0)
             throw new EOFException("Wrote negative bytes to channel. This shouldn't happen.");
+        //2.修改还剩多少字节没有写进传输层
         remaining -= written;
         pending = TransportLayers.hasPendingWrites(channel);
         return written;

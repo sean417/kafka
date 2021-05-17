@@ -71,26 +71,35 @@ public class SubscriptionState {
             "Subscription to topics, partitions and pattern are mutually exclusive";
 
     private final Logger log;
-
+    //表示订阅Topic的模式，分四类：
     private enum SubscriptionType {
-        NONE, AUTO_TOPICS, AUTO_PATTERN, USER_ASSIGNED
+        NONE, //初始值。
+        AUTO_TOPICS, //按指定的Topic进行订阅，自动分配分区。
+        AUTO_PATTERN, //按正则表达式匹配的topic进行订阅，自动分配分区。
+        USER_ASSIGNED //用户自己定制消费者要消费的topic和分区。
     }
 
     /* the type of subscription */
     private SubscriptionType subscriptionType;
 
     /* the pattern user has requested */
+    //用来过滤topic的正则表达式
     private Pattern subscribedPattern;
 
     /* the list of topics the user has requested */
+    //用户手动写的要订阅的topic
     private Set<String> subscription;
 
     /* The list of topics the group has subscribed to. This may include some topics which are not part
      * of `subscription` for the leader of a group since it is responsible for detecting metadata changes
      * which require a group rebalance. */
+    //消费组订阅的所有topic,当这个消费者被服务端groupCoordinator选为leader consumer的时候，
+    // 这个字段是消费组所有消费者订阅的主题，用于监控消费组主题相关的元数据的变化，以适应消费组重平衡时的需要。
+    // 而follower consumer里这个字段只会保存本消费者订阅的主题。
     private Set<String> groupSubscription;
 
     /* the partitions that are currently assigned, note that the order of partition matters (see FetchBuilder for more details) */
+    //记录消费者里主题分区的状态集合。
     private final PartitionStates<TopicPartitionState> assignment;
 
     /* Default offset reset strategy */
@@ -159,7 +168,7 @@ public class SubscriptionState {
         else if (this.subscriptionType != type)
             throw new IllegalStateException(SUBSCRIPTION_EXCEPTION_MESSAGE);
     }
-
+    //
     public synchronized boolean subscribe(Set<String> topics, ConsumerRebalanceListener listener) {
         registerRebalanceListener(listener);
         setSubscriptionType(SubscriptionType.AUTO_TOPICS);
@@ -739,12 +748,13 @@ public class SubscriptionState {
     private static class TopicPartitionState {
 
         private FetchState fetchState;
-        private FetchPosition position; // last consumed position
+        private FetchPosition position; // 记录下次要从服务端获取分区的offset。last consumed position
 
         private Long highWatermark; // the high watermark from last fetch
         private Long logStartOffset; // the log start offset
         private Long lastStableOffset;
         private boolean paused;  // whether this partition has been paused by the user
+        //重置position的策略
         private OffsetResetStrategy resetStrategy;  // the strategy to use if the offset needs resetting
         private Long nextRetryTimeMs;
         private Integer preferredReadReplica;
@@ -761,7 +771,7 @@ public class SubscriptionState {
             this.nextRetryTimeMs = null;
             this.preferredReadReplica = null;
         }
-
+        //转换获取offset的状态，并执行相应任务
         private void transitionState(FetchState newState, Runnable runIfTransitioned) {
             FetchState nextState = this.fetchState.transitionTo(newState);
             if (nextState.equals(newState)) {

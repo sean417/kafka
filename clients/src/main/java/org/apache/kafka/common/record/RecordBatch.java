@@ -213,6 +213,8 @@ public interface RecordBatch extends Iterable<Record> {
     /**
      * Get the partition leader epoch of this record batch.
      * @return The leader epoch or -1 if it is unknown
+     *
+     * 记录批次的leader分区的版本
      */
     int partitionLeaderEpoch();
 
@@ -235,6 +237,7 @@ public interface RecordBatch extends Iterable<Record> {
      * For magic versions prior to 2, this is always false.
      *
      * @return Whether this is a batch containing control records
+     * 批次里是否包含控制记录。
      */
     boolean isControlBatch();
 }

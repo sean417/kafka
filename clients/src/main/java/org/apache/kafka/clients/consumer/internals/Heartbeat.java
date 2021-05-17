@@ -34,8 +34,9 @@ public final class Heartbeat {
     private final Timer sessionTimer;
     private final Timer pollTimer;
     private final Logger log;
-
+    //最后一次发送心跳的时间
     private volatile long lastHeartbeatSend = 0L;
+    //是否有正在发送的心跳。
     private volatile boolean heartbeatInFlight = false;
 
     public Heartbeat(GroupRebalanceConfig config,
@@ -69,9 +70,11 @@ public final class Heartbeat {
     }
 
     void sentHeartbeat(long now) {
+        //设置最后一次发心跳的时间
         lastHeartbeatSend = now;
         heartbeatInFlight = true;
         update(now);
+        //每隔多久发送心跳。
         heartbeatTimer.reset(rebalanceConfig.heartbeatIntervalMs);
 
         if (log.isTraceEnabled()) {
@@ -89,6 +92,7 @@ public final class Heartbeat {
 
     void receiveHeartbeat() {
         update(time.milliseconds());
+        //发送成功，设置可以再继续发心跳的标记
         heartbeatInFlight = false;
         sessionTimer.reset(rebalanceConfig.sessionTimeoutMs);
     }

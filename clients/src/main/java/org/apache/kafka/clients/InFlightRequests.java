@@ -27,10 +27,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The set of requests which have been sent or are being sent but haven't yet received a response
+ *
+ * 已经发送或正在发送的请求集合
  */
 final class InFlightRequests {
-
+    //
     private final int maxInFlightRequestsPerConnection;
+    //key是nodeid,value是对于noded的InFlightRequest集合
     private final Map<String, Deque<NetworkClient.InFlightRequest>> requests = new HashMap<>();
     /** Thread safe total number of in flight requests. */
     private final AtomicInteger inFlightRequestCount = new AtomicInteger(0);
@@ -93,7 +96,10 @@ final class InFlightRequests {
 
     /**
      * Can we send more requests to this node?
-     *
+     * 这个方法是判断是否还能给这个node发送请求的条件之一
+     * queue == null || queue.isEmpty()这两个为空很好理解
+     * queue.peekFirst().send.completed()，对头迟迟发送不完，说明网络与这个node的网络有问题。
+     * queue.size() < this.maxInFlightRequestsPerConnection：不能堆积过多
      * @param node Node in question
      * @return true iff we have no requests still being sent to the given node
      */

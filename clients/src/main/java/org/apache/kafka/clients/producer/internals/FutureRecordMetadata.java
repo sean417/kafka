@@ -29,7 +29,7 @@ import java.util.concurrent.TimeoutException;
  */
 public final class FutureRecordMetadata implements Future<RecordMetadata> {
 
-    private final ProduceRequestResult result;
+    private final ProduceRequestResult  result;
     private final long relativeOffset;
     private final long createTimestamp;
     private final Long checksum;

@@ -43,6 +43,7 @@ import static org.apache.kafka.common.utils.Utils.wrapNullable;
  */
 public class MemoryRecordsBuilder implements AutoCloseable {
     private static final float COMPRESSION_RATE_ESTIMATION_FACTOR = 1.05f;
+    //禁止写入的输出流
     private static final DataOutputStream CLOSED_STREAM = new DataOutputStream(new OutputStream() {
         @Override
         public void write(int b) {
@@ -51,39 +52,62 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     });
 
     private final TimestampType timestampType;
+    //消息压缩类型
     private final CompressionType compressionType;
     // Used to hold a reference to the underlying ByteBuffer so that we can write the record batch header and access
     // the written bytes. ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough,
     // so it's not safe to hold a direct reference to the underlying ByteBuffer.
+
+    // kafka对OutputStream接口的实现类，实现了对bytebuffer的扩容
     private final ByteBufferOutputStream bufferStream;
+    // 消息的版本
     private final byte magic;
+    // ByteBuffer的初始位置
     private final int initialPosition;
+    //基本位移
     private final long baseOffset;
+    //追加消息的时间
     private final long logAppendTime;
+    //是否是控制类的批次
     private final boolean isControlBatch;
+    //分区leader的版本
     private final int partitionLeaderEpoch;
+    //记录ByteBuffer里以及写了多少空间
     private final int writeLimit;
+    //batch头大小
     private final int batchHeaderSizeInBytes;
 
     // Use a conservative estimate of the compression ratio. The producer overrides this using statistics
     // from previous batches before appending any records.
+    // 评估压缩率
     private float estimatedCompressionRatio = 1.0F;
 
     // Used to append records, may compress data on the fly
+    // 给ByteBuffer增加压缩的功能
     private DataOutputStream appendStream;
+    // 这个批次是否是事务的一部分
     private boolean isTransactional;
+    // 生产者id
     private long producerId;
+    // 生产者版本。
     private short producerEpoch;
+    // 批次序列号
     private int baseSequence;
+    // 压缩前要写入的消息体大小
     private int uncompressedRecordsSizeInBytes = 0; // Number of bytes (excluding the header) written before compression
+    // 记录数
     private int numRecords = 0;
+    // 实际压缩率
     private float actualCompressionRatio = 1;
     private long maxTimestamp = RecordBatch.NO_TIMESTAMP;
     private long offsetOfMaxTimestamp = -1;
+    //最后的偏移量
     private Long lastOffset = null;
+    //第一次追加消息的时间戳
     private Long firstTimestamp = null;
-
+    //真正保存消息的地方
     private MemoryRecords builtRecords;
+    //是否终止
     private boolean aborted = false;
 
     public MemoryRecordsBuilder(ByteBufferOutputStream bufferStream,
@@ -127,10 +151,12 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         this.partitionLeaderEpoch = partitionLeaderEpoch;
         this.writeLimit = writeLimit;
         this.initialPosition = bufferStream.position();
+        //计算Batch头的长度
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
-
+        //调整position
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
         this.bufferStream = bufferStream;
+        //增加压缩的功能
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
     }
 
@@ -326,6 +352,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
                 this.actualCompressionRatio = (float) writeLegacyCompressedWrapperHeader() / this.uncompressedRecordsSizeInBytes;
 
             ByteBuffer buffer = buffer().duplicate();
+            //设置为读模式
             buffer.flip();
             buffer.position(initialPosition);
             builtRecords = MemoryRecords.readableRecords(buffer.slice());
@@ -693,10 +720,15 @@ public class MemoryRecordsBuilder implements AutoCloseable {
 
     private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value,
                                      Header[] headers) throws IOException {
+        //1.检查是否可以写
         ensureOpenForRecordAppend();
+        //2.计算要写多少偏移量
         int offsetDelta = (int) (offset - baseOffset);
+        //3.计算这次写和第一次写直接的时间。
         long timestampDelta = timestamp - firstTimestamp;
+        //4.把消息写入appendStream，并返回压缩前的消息大小。
         int sizeInBytes = DefaultRecord.writeTo(appendStream, offsetDelta, timestampDelta, key, value, headers);
+        //5.消息写入成功后更新相关的数据。
         recordWritten(offset, timestamp, sizeInBytes);
     }
 

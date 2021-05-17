@@ -60,15 +60,16 @@ public interface Time {
     void sleep(long ms);
 
     /**
+     * 条件不满足即使被notify了也一直等待，除非超时抛出异常
      * Wait for a condition using the monitor of a given object. This avoids the implicit
      * dependence on system time when calling {@link Object#wait()}.
      *
      * @param obj The object that will be waited with {@link Object#wait()}. Note that it is the responsibility
      *      of the caller to call notify on this object when the condition is satisfied.
-     * @param condition The condition we are awaiting
-     * @param deadlineMs The deadline timestamp at which to raise a timeout error
+     * @param condition The condition we are awaiting：条件满足就不用阻塞了。
+     * @param deadlineMs The deadline timestamp at which to raise a timeout error：元数据更新超时了。
      *
-     * @throws org.apache.kafka.common.errors.TimeoutException if the timeout expires before the condition is satisfied
+     * @throws org.apache.kafka.common.errors.TimeoutException if the timeout expires before the condition is satisfied 在条件满足前就超时了
      */
     void waitObject(Object obj, Supplier<Boolean> condition, long deadlineMs) throws InterruptedException;
 

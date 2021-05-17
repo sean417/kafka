@@ -70,7 +70,7 @@ public class Producer extends Thread {
     public void run() {
         int messageKey = 0;
         int recordsSent = 0;
-        while (recordsSent < numRecords) {
+        while (recordsSent < 1) {
             String messageStr = "Message_" + messageKey;
             long startTime = System.currentTimeMillis();
             if (isAsync) { // Send asynchronously

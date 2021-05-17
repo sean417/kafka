@@ -30,11 +30,12 @@ import org.apache.kafka.common.utils.Utils;
  * partition for any given topic. This class should not be used externally. 
  */
 public class StickyPartitionCache {
+    //保存给主题分配的对应分区的集合。
     private final ConcurrentMap<String, Integer> indexCache;
     public StickyPartitionCache() {
         this.indexCache = new ConcurrentHashMap<>();
     }
-
+    //返回主题对应的分区
     public int partition(String topic, Cluster cluster) {
         Integer part = indexCache.get(topic);
         if (part == null) {
@@ -42,21 +43,26 @@ public class StickyPartitionCache {
         }
         return part;
     }
-
+    //换取topic对应发送分区
     public int nextPartition(String topic, Cluster cluster, int prevPartition) {
         List<PartitionInfo> partitions = cluster.partitionsForTopic(topic);
         Integer oldPart = indexCache.get(topic);
         Integer newPart = oldPart;
         // Check that the current sticky partition for the topic is either not set or that the partition that 
         // triggered the new batch matches the sticky partition that needs to be changed.
+        // 分区没有设置对应的分区或因为新的批次触发了需要换分区的需求。
         if (oldPart == null || oldPart == prevPartition) {
             List<PartitionInfo> availablePartitions = cluster.availablePartitionsForTopic(topic);
+            //没有可用的分区
             if (availablePartitions.size() < 1) {
                 Integer random = Utils.toPositive(ThreadLocalRandom.current().nextInt());
                 newPart = random % partitions.size();
+                //只有一个可用的分区
             } else if (availablePartitions.size() == 1) {
                 newPart = availablePartitions.get(0).partition();
             } else {
+                // 1.newPart == null：给新主题申请发送分区
+                // 2.newPart.equals(oldPart)：对于原来就分配了分区的会循环哈希到跟上个不一样的分区。
                 while (newPart == null || newPart.equals(oldPart)) {
                     Integer random = Utils.toPositive(ThreadLocalRandom.current().nextInt());
                     newPart = availablePartitions.get(random % availablePartitions.size()).partition();
@@ -66,10 +72,12 @@ public class StickyPartitionCache {
             if (oldPart == null) {
                 indexCache.putIfAbsent(topic, newPart);
             } else {
+                //有可能被别的线程提前申请了新的分区。
                 indexCache.replace(topic, prevPartition, newPart);
             }
             return indexCache.get(topic);
         }
+        //返回要发送的分区。
         return indexCache.get(topic);
     }
 

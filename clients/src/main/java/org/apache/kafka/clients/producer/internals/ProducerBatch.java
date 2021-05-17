@@ -56,25 +56,37 @@ import static org.apache.kafka.common.record.RecordBatch.NO_TIMESTAMP;
 public final class ProducerBatch {
 
     private static final Logger log = LoggerFactory.getLogger(ProducerBatch.class);
-
+    //批次最终状态
     private enum FinalState { ABORTED, FAILED, SUCCEEDED }
-
+    //批次创建时间
     final long createdMs;
+    //批次对应的分区
     final TopicPartition topicPartition;
+    //请求结果的 future
     final ProduceRequestResult produceFuture;
-
+    //生产者消息的回调方法保存在这里。
     private final List<Thunk> thunks = new ArrayList<>();
+    //封装了MemoryRecords对象，用来存储消息
     private final MemoryRecordsBuilder recordsBuilder;
+    //batch的失败重试次数。
     private final AtomicInteger attempts = new AtomicInteger(0);
+    //是否是分裂后的批次
     private final boolean isSplitBatch;
+    //ProducerBatch的最终状态
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
-
+    //保存Record的个数
     int recordCount;
+    //最大Record字节数
     int maxRecordSize;
+    //最后一次失败重试发送的时间戳
     private long lastAttemptMs;
+    //最后一次发送的时间戳
     private long lastAppendTime;
+    //Sender线程拉取批次的时间
     private long drainedMs;
+    //是否失败重试过
     private boolean retry;
+
     private boolean reopened;
 
     public ProducerBatch(TopicPartition tp, MemoryRecordsBuilder recordsBuilder, long createdMs) {
@@ -101,13 +113,16 @@ public final class ProducerBatch {
      * @return The RecordSend corresponding to this record or null if there isn't sufficient room.
      */
     public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, Callback callback, long now) {
+        //1.检验是否有空间
         if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
             return null;
         } else {
+            //2.把消息加入到ProducerBatch对应的MemoryRecords中。
             Long checksum = this.recordsBuilder.append(timestamp, key, value, headers);
             this.maxRecordSize = Math.max(this.maxRecordSize, AbstractRecords.estimateSizeInBytesUpperBound(magic(),
                     recordsBuilder.compressionType(), key, value, headers));
             this.lastAppendTime = now;
+            //3.构建FutureRecordMetadata对象
             FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
                                                                    timestamp, checksum,
                                                                    key == null ? -1 : key.length,
@@ -115,6 +130,7 @@ public final class ProducerBatch {
                                                                    Time.SYSTEM);
             // we have to keep every future returned to the users in case the batch needs to be
             // split to several new batches and resent.
+            //4.加入thunks
             thunks.add(new Thunk(callback, future));
             this.recordCount++;
             return future;
@@ -148,7 +164,7 @@ public final class ProducerBatch {
 
     /**
      * Abort the batch and complete the future and callbacks.
-     *
+     * 放弃批次
      * @param exception The exception to use to complete the future and awaiting callbacks.
      */
     public void abort(RuntimeException exception) {
@@ -185,6 +201,7 @@ public final class ProducerBatch {
      * @return true if the batch was completed successfully and false if the batch was previously aborted
      */
     public boolean done(long baseOffset, long logAppendTime, RuntimeException exception) {
+        //1.设定batch的最终状态
         final FinalState tryFinalState = (exception == null) ? FinalState.SUCCEEDED : FinalState.FAILED;
 
         if (tryFinalState == FinalState.SUCCEEDED) {
@@ -194,6 +211,7 @@ public final class ProducerBatch {
         }
 
         if (this.finalState.compareAndSet(null, tryFinalState)) {
+            //2.执行回调
             completeFutureAndFireCallbacks(baseOffset, logAppendTime, exception);
             return true;
         }
@@ -214,17 +232,21 @@ public final class ProducerBatch {
         }
         return false;
     }
-
+    //执行ProduceBatch中所有的回调,并执行ProduceRequestResult的done()方法，
     private void completeFutureAndFireCallbacks(long baseOffset, long logAppendTime, RuntimeException exception) {
         // Set the future before invoking the callbacks as we rely on its state for the `onCompletion` call
+        //1.设置produceFuture的相关数据。
         produceFuture.set(baseOffset, logAppendTime, exception);
 
         // execute callbacks
+        //2.轮询thunks集合，调用callback。
         for (Thunk thunk : thunks) {
             try {
                 if (exception == null) {
+                    //3.获取消息元数据
                     RecordMetadata metadata = thunk.future.value();
                     if (thunk.callback != null)
+                        //3.调用
                         thunk.callback.onCompletion(metadata, null);
                 } else {
                     if (thunk.callback != null)
@@ -340,7 +362,7 @@ public final class ProducerBatch {
     int attempts() {
         return attempts.get();
     }
-
+    //producerBatch失败后重入队
     void reenqueued(long now) {
         attempts.getAndIncrement();
         lastAttemptMs = Math.max(lastAppendTime, now);

@@ -47,30 +47,37 @@ import static org.apache.kafka.common.record.RecordBatch.NO_PARTITION_LEADER_EPO
 
 /**
  * A class encapsulating some of the logic around metadata.
+ * 这个类封装了一些关于元数据的逻辑。
  * <p>
- * This class is shared by the client thread (for partitioning) and the background sender thread.
  *
+ * This class is shared by the client thread (for partitioning) and the background sender thread.
+ * 这个类会被生产端者线程和生产者后台线程sender使用
  * Metadata is maintained for only a subset of topics, which can be added to over time. When we request metadata for a
  * topic we don't have any metadata for it will trigger a metadata update.
+ * 元数据仅仅维护着一个主题子集的相关数据，并且每个主题都有对应的过期时间。当我们请求一个元数据里没有的主题元信息时，会触发元数据的更新。
  * <p>
  * If topic expiry is enabled for the metadata, any topic that has not been used within the expiry interval
  * is removed from the metadata refresh set after an update. Consumers disable topic expiry since they explicitly
  * manage topics while producers rely on topic expiry to limit the refresh set.
+ *如果元数据中能够主题过期，任何在过期时间内没使用过的主题都会从刷新主题的集合中删除。消费者能够通过显示的管理主题关闭主题过期的功能，但是
+ * 生产者要依赖主题过期来限制刷新主题的集合
+ *
+ *
  */
 public class Metadata implements Closeable {
     private final Logger log;
-    private final long refreshBackoffMs;
-    private final long metadataExpireMs;
-    private int updateVersion;  // bumped on every metadata response
-    private int requestVersion; // bumped on every new topic addition
-    private long lastRefreshMs;
-    private long lastSuccessfulRefreshMs;
+    private final long refreshBackoffMs;//退避时间，默认100ms
+    private final long metadataExpireMs;//元数据过期时间，默认5分钟
+    private int updateVersion;  // 每次更新元数据时加一
+    private int requestVersion; // 每次添加一个新的主题都会加一.
+    private long lastRefreshMs;//最后一次更新时间
+    private long lastSuccessfulRefreshMs;//最后一次全部主题成功更新时间戳
     private KafkaException fatalException;
-    private Set<String> invalidTopics;
-    private Set<String> unauthorizedTopics;
-    private MetadataCache cache = MetadataCache.empty();
-    private boolean needFullUpdate;
-    private boolean needPartialUpdate;
+    private Set<String> invalidTopics;//无效的主题
+    private Set<String> unauthorizedTopics;//没有权限的主题
+    private MetadataCache cache = MetadataCache.empty();//元数据
+    private boolean needFullUpdate;//是否需要整体更新
+    private boolean needPartialUpdate;//是否需要部分更新
     private final ClusterResourceListeners clusterResourceListeners;
     private boolean isClosed;
     private final Map<TopicPartition, Integer> lastSeenLeaderEpochs;
@@ -128,6 +135,10 @@ public class Metadata implements Closeable {
      *
      * @param nowMs current time in ms
      * @return remaining time in ms till updating the cluster info
+     *
+     * 判断是否要更新元数据，
+     * 1.如果标识要求更新，就立即更新。
+     * 2.元数据过期了。
      */
     public synchronized long timeToNextUpdate(long nowMs) {
         long timeToExpire = updateRequested() ? 0 : Math.max(this.lastSuccessfulRefreshMs + this.metadataExpireMs - nowMs, 0);
@@ -140,12 +151,13 @@ public class Metadata implements Closeable {
 
     /**
      * Request an update of the current cluster metadata info, return the current updateVersion before the update
+     * 做更新客户端全部主题的标记
      */
     public synchronized int requestUpdate() {
         this.needFullUpdate = true;
         return this.updateVersion;
     }
-
+    //做更新新主题的标记
     public synchronized int requestUpdateForNewTopics() {
         // Override the timestamp of last refresh to let immediate update.
         this.lastRefreshMs = 0;
@@ -194,7 +206,7 @@ public class Metadata implements Closeable {
 
     /**
      * Check whether an update has been explicitly requested.
-     *
+     * 元数据是否已经被更新了
      * @return true if an update was requested, false otherwise
      */
     public synchronized boolean updateRequested() {
@@ -226,7 +238,7 @@ public class Metadata implements Closeable {
         Optional<Node> leaderNodeOpt = partitionMetadata.leaderId.flatMap(cache::nodeById);
         return new LeaderAndEpoch(leaderNodeOpt, leaderEpochOpt);
     }
-
+    //元数据引导方法。
     public synchronized void bootstrap(List<InetSocketAddress> addresses) {
         this.needFullUpdate = true;
         this.updateVersion += 1;
@@ -256,7 +268,7 @@ public class Metadata implements Closeable {
         Objects.requireNonNull(response, "Metadata response cannot be null");
         if (isClosed())
             throw new IllegalStateException("Update requested after metadata close");
-
+        //1.判断是否是部分主题更新，以及更新几个字段
         this.needPartialUpdate = requestVersion < this.requestVersion;
         this.lastRefreshMs = nowMs;
         this.updateVersion += 1;
@@ -266,7 +278,7 @@ public class Metadata implements Closeable {
         }
 
         String previousClusterId = cache.clusterResource().clusterId();
-
+        //2.解析元数据响应
         this.cache = handleMetadataResponse(response, isPartialUpdate, nowMs);
 
         Cluster cluster = cache.cluster();
@@ -305,53 +317,64 @@ public class Metadata implements Closeable {
 
     /**
      * Transform a MetadataResponse into a new MetadataCache instance.
+     * 解析元数据并根据元数据实例化新的MetadataCache对象。
+     *
      */
     private MetadataCache handleMetadataResponse(MetadataResponse metadataResponse, boolean isPartialUpdate, long nowMs) {
         // All encountered topics.
+
         Set<String> topics = new HashSet<>();
 
-        // Retained topics to be passed to the metadata cache.
+        // 1.初始化相关集合Retained topics to be passed to the metadata cache.
         Set<String> internalTopics = new HashSet<>();
         Set<String> unauthorizedTopics = new HashSet<>();
         Set<String> invalidTopics = new HashSet<>();
 
         List<MetadataResponse.PartitionMetadata> partitions = new ArrayList<>();
+        //2.轮询响应中的主题元数据。
         for (MetadataResponse.TopicMetadata metadata : metadataResponse.topicMetadata()) {
             topics.add(metadata.topic());
-
+            //3.判断是否保留主题元数据。
             if (!retainTopic(metadata.topic(), metadata.isInternal(), nowMs))
                 continue;
-
+            //4.判断是否是内部主题。
             if (metadata.isInternal())
                 internalTopics.add(metadata.topic());
-
+            //5.如果元数据响应没有错误就更新本地元数据缓存
             if (metadata.error() == Errors.NONE) {
+                //6.遍历分区信息
                 for (MetadataResponse.PartitionMetadata partitionMetadata : metadata.partitionMetadata()) {
                     // Even if the partition's metadata includes an error, we need to handle
                     // the update to catch new epochs
                     updateLatestMetadata(partitionMetadata, metadataResponse.hasReliableLeaderEpochs())
                         .ifPresent(partitions::add);
-
+                    //分区数据有问题
                     if (partitionMetadata.error.exception() instanceof InvalidMetadataException) {
                         log.debug("Requesting metadata update for partition {} due to error {}",
                                 partitionMetadata.topicPartition, partitionMetadata.error);
+                        //标记需要更新元数据
                         requestUpdate();
                     }
                 }
+                //如果元数据响应有错误
             } else {
+                //无效元数据异常
                 if (metadata.error().exception() instanceof InvalidMetadataException) {
                     log.debug("Requesting metadata update for topic {} due to error {}", metadata.topic(), metadata.error());
+                    //标记需要更新元数据
                     requestUpdate();
                 }
-
+                //如果是无效主题的错误
                 if (metadata.error() == Errors.INVALID_TOPIC_EXCEPTION)
                     invalidTopics.add(metadata.topic());
+                //如果是无权限主题的错误
                 else if (metadata.error() == Errors.TOPIC_AUTHORIZATION_FAILED)
                     unauthorizedTopics.add(metadata.topic());
             }
         }
 
         Map<Integer, Node> nodes = metadataResponse.brokersById();
+        //8.如果是部分主题的响应就和现在的元数据缓存整合在一起，如果不是就重建元数据缓存
         if (isPartialUpdate)
             return this.cache.mergeWith(metadataResponse.clusterId(), nodes, partitions,
                 unauthorizedTopics, invalidTopics, internalTopics, metadataResponse.controller(),
@@ -507,6 +530,9 @@ public class Metadata implements Closeable {
 
         // Perform a partial update only if a full update hasn't been requested, and the last successful
         // hasn't exceeded the metadata refresh time.
+        // 如果是部分主题更新就进入判断。
+        // 1.needFullUpdate为false:不是全部主题的元数据都要求更新。
+        // 2.没有到元数据超时时间，默认五分钟。
         if (!this.needFullUpdate && this.lastSuccessfulRefreshMs + this.metadataExpireMs > nowMs) {
             request = newMetadataRequestBuilderForNewTopics();
             isPartialUpdate = true;

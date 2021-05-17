@@ -61,6 +61,7 @@ public class MemoryRecords extends AbstractRecords {
         return buffer.limit();
     }
 
+    // 把 ByteBuffer 往channel里写,但是write一次ByteBuffer里的数据不一定都能写完。
     @Override
     public long writeTo(GatheringByteChannel channel, long position, int length) throws IOException {
         if (position > Integer.MAX_VALUE)

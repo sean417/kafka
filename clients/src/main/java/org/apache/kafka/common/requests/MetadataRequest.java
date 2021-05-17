@@ -34,6 +34,7 @@ public class MetadataRequest extends AbstractRequest {
 
     public static class Builder extends AbstractRequest.Builder<MetadataRequest> {
         private static final MetadataRequestData ALL_TOPICS_REQUEST_DATA = new MetadataRequestData().
+                //如果设置主题为null（setTopics(null)）就意味着获取全部主题元数据。
             setTopics(null).setAllowAutoTopicCreation(true);
 
         private final MetadataRequestData data;

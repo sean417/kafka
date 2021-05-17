@@ -35,16 +35,26 @@ import java.util.Set;
 public final class Cluster {
 
     private final boolean isBootstrapConfigured;
+    //kafka集群列表
     private final List<Node> nodes;
+    //没有授权的主题集合
     private final Set<String> unauthorizedTopics;
+    //无效topic列表
     private final Set<String> invalidTopics;
+    //内部topic列表：__consumer_offsets记录消费者消费偏移量的主题
     private final Set<String> internalTopics;
+    //控制器所在的节点
     private final Node controller;
+    //每个分区详细信息集合
     private final Map<TopicPartition, PartitionInfo> partitionsByTopicPartition;
+    //每个主题下的分区列表集合。
     private final Map<String, List<PartitionInfo>> partitionsByTopic;
+    //每个主题下的有效分区列表集合。
     private final Map<String, List<PartitionInfo>> availablePartitionsByTopic;
+    //每个节点下的分区列表集合。
     private final Map<Integer, List<PartitionInfo>> partitionsByNode;
     private final Map<Integer, Node> nodesById;
+    //kafka集群信息
     private final ClusterResource clusterResource;
 
     /**
