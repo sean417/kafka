@@ -597,18 +597,18 @@ public class NetworkClient implements KafkaClient {
         // process completed actions
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
-        //3.处理completedSends队列
+        // 3.处理completedSends队列
         handleCompletedSends(responses, updatedNow);
-        //4.处理completedReceives队列
+        // 4.处理completedReceives队列
         handleCompletedReceives(responses, updatedNow);
         // 5.处理 disconnected列表
         handleDisconnections(responses, updatedNow);
         // 6.处理connected列表，处理各方面都正常的请求
         handleConnections();
         handleInitiateApiVersionRequests(updatedNow);
-        //7.处理超时连接：
-        // 1.关闭与node连接超时的连接
-        // 2.删除InFlightRequests中的超时请求
+        // 7.处理超时连接：
+        // 1）.关闭与node连接超时的连接
+        // 2）.删除InFlightRequests中的超时请求
         handleTimedOutConnections(responses, updatedNow);
         //8.处理超时请求：
         handleTimedOutRequests(responses, updatedNow);

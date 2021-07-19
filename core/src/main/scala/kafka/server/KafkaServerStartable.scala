@@ -36,11 +36,13 @@ object KafkaServerStartable {
 }
 
 class KafkaServerStartable(val staticServerConfig: KafkaConfig, reporters: Seq[KafkaMetricsReporter], threadNamePrefix: Option[String] = None) extends Logging {
+  //构造代码块，创建类时会创建这个对象。
   private val server = new KafkaServer(staticServerConfig, kafkaMetricsReporters = reporters, threadNamePrefix = threadNamePrefix)
 
   def this(serverConfig: KafkaConfig) = this(serverConfig, Seq.empty)
 
   def startup(): Unit = {
+    //启动KafkaServer
     try server.startup()
     catch {
       case _: Throwable =>

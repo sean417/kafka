@@ -270,6 +270,7 @@ class Partition(val topicPartition: TopicPartition,
   def partitionId: Int = topicPartition.partition
 
   private val stateChangeLogger = new StateChangeLogger(localBrokerId, inControllerContext = false, None)
+  //所有远程分区副本
   private val remoteReplicasMap = new Pool[Int, Replica]
   // The read lock is only required when multiple reads are executed and needs to be in a consistent manner
   private val leaderIsrUpdateLock = new ReentrantReadWriteLock

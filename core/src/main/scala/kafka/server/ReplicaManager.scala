@@ -250,7 +250,7 @@ class ReplicaManager(val config: KafkaConfig,
   * */
   @volatile var controllerEpoch: Int = KafkaController.InitialControllerEpoch
   private val localBrokerId = config.brokerId
-  //承载了 Broker 上保存的所有分区对象数据
+  //承载了 Broker 上保存的所有分区对象数据。
   private val allPartitions = new Pool[TopicPartition, HostedPartition](
     valueFactory = Some(tp => HostedPartition.Online(Partition(tp, time, this)))
   )

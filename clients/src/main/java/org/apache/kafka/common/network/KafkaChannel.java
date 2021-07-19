@@ -261,6 +261,7 @@ public class KafkaChannel implements AutoCloseable {
      */
     boolean maybeUnmute() {
         if (muteState == ChannelMuteState.MUTED) {
+            //重新注册OP_READ，又可以监听客户端的请求了。
             if (!disconnected) transportLayer.addInterestOps(SelectionKey.OP_READ);
             muteState = ChannelMuteState.NOT_MUTED;
         }
@@ -378,7 +379,7 @@ public class KafkaChannel implements AutoCloseable {
         if (this.send != null)
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
         this.send = send;//设置要发送消息的字段
-        //调用传输层关注写事件
+        //调用传输层关注写事件，这样我们就可以向服务端发送请求了。
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
     //对请求发送完后数据做些调整。

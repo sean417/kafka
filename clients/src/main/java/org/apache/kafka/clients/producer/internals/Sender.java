@@ -332,9 +332,9 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
-        //1.发送消息到KafkaChanel缓存
+        //1.发送消息到KafkaChanel缓存。
         long pollTimeout = sendProducerData(currentTimeMs);
-        //2.发送消息到网络
+        //2.发送消息到网络。
         client.poll(pollTimeout, currentTimeMs);
     }
     //消息发送到暂存类中，并返回poll超时时间。

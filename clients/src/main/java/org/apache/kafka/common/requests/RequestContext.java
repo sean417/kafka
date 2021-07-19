@@ -57,18 +57,24 @@ public class RequestContext implements AuthorizableRequestContext {
         this.securityProtocol = securityProtocol;
         this.clientInformation = clientInformation;
     }
-
+    //从给定的ByteBuffer中取出Request和对应的Size值。
     public RequestAndSize parseRequest(ByteBuffer buffer) {
+        //判断是不是不支持的request版本。
         if (isUnsupportedApiVersionsRequest()) {
             // Unsupported ApiVersion requests are treated as v0 requests and are not parsed
+            // 如果是不支持的request版本就不做解析操作，直接返回。
             ApiVersionsRequest apiVersionsRequest = new ApiVersionsRequest(new ApiVersionsRequestData(), (short) 0, header.apiVersion());
             return new RequestAndSize(apiVersionsRequest, 0);
         } else {
+            //从请求头部数据中获取ApiKeys信息
             ApiKeys apiKey = header.apiKey();
             try {
+                //从请求头部数据中获取版本信息
                 short apiVersion = header.apiVersion();
+                //解析请求
                 Struct struct = apiKey.parseRequest(apiVersion, buffer);
                 AbstractRequest body = AbstractRequest.parseRequest(apiKey, apiVersion, struct);
+                //返回封装解析后的请求对象已经请求大小
                 return new RequestAndSize(body, struct.sizeOf());
             } catch (Throwable ex) {
                 throw new InvalidRequestException("Error getting request for apiKey: " + apiKey +
